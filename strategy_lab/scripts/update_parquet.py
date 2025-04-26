@@ -3,7 +3,7 @@ import asyncio
 import polars as pl
 import os
 import asyncpg
-import sys
+from typing import List
 from pathlib import Path
 from strategy_lab.utils.trading_calendar import TradingCalendar
 
@@ -30,7 +30,7 @@ EOD_OUTPUT_DIR = Path(EOD_DIR)
 INTRADAY_OUTPUT_DIR = Path(INTRADAY_DIR)
 CALENDAR_PATH = Path(os.path.join(PARQUET_DIR, "calendar.parquet"))
 
-async def fetch_eod(conn, start_date, end_date):
+async def fetch_eod(conn: asyncpg.Connection, start_date: str, end_date: str) -> List[asyncpg.Record]:
     query = f"""
     SELECT stk, dt, o, hi, lo, c, v
     FROM eod_table
@@ -38,7 +38,7 @@ async def fetch_eod(conn, start_date, end_date):
     """
     return await conn.fetch(query)
 
-async def fetch_intraday(conn, start_date, end_date):
+async def fetch_intraday(conn: asyncpg.Connection, start_date: str, end_date: str) -> List[asyncpg.Record]:
     query = f"""
     SELECT stk, dt, o, hi, lo, c, v
     FROM intraday_table
@@ -46,7 +46,7 @@ async def fetch_intraday(conn, start_date, end_date):
     """
     return await conn.fetch(query)
 
-async def save_eod(records):
+async def save_eod(records: List[asyncpg.Record]) -> None:
     if not records:
         return
     df = pl.DataFrame(records).rename({
@@ -69,7 +69,7 @@ async def save_eod(records):
             updated = sub_df
         updated.sort("date").write_parquet(path)
 
-async def save_intraday(records):
+async def save_intraday(records: List[asyncpg.Record]) -> None:
     if not records:
         return
     df = pl.DataFrame(records).rename({
@@ -93,7 +93,7 @@ async def save_intraday(records):
             path = ticker_dir / f"{date}.parquet"
             day_df.drop("ticker").write_parquet(path)
 
-async def main(start_date, end_date):
+async def main(start_date: str, end_date: str) -> None:
     conn = await asyncpg.connect(**DB_CONFIG)
     eod_records = await fetch_eod(conn, start_date, end_date)
     intraday_records = await fetch_intraday(conn, start_date, end_date)
