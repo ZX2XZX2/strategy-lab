@@ -61,3 +61,20 @@ class TradingCalendar:
         Returns True if the date is a trading day.
         """
         return date in self._day_to_index
+
+    def current_business_date(self, hour: int = 0) -> str:
+        """
+        Returns today's business date based on current time.
+        If before specified hour and today is a business date, returns previous business date.
+        """
+        now = datetime.now()
+        today = now.strftime("%Y-%m-%d")
+        if today in self._day_to_index:
+            if now.hour < hour:
+                return self.previous(today)
+            else:
+                return today
+        for date in reversed(self.trading_days):
+            if date <= today:
+                return date
+        raise ValueError("No valid business date found.")
