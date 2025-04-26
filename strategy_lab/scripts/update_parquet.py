@@ -1,9 +1,11 @@
+import argparse
 import asyncio
 import polars as pl
 import os
 import asyncpg
 import sys
 from pathlib import Path
+from strategy_lab.utils.trading_calendar import TradingCalendar
 
 DB_CONFIG = {
     "user": os.getenv("POSTGRES_USER"),
@@ -13,8 +15,20 @@ DB_CONFIG = {
     "host": os.getenv("POSTGRES_HOST")
 }
 
-EOD_OUTPUT_DIR = Path("path/to/eod")
-INTRADAY_OUTPUT_DIR = Path("path/to/intraday")
+PARQUET_DIR = os.path.join(os.getenv("HOME"), "parquet")
+if not os.path.exists(PARQUET_DIR):
+    os.makedirs(PARQUET_DIR)
+EOD_DIR = os.path.join(PARQUET_DIR, "eod")
+INTRADAY_DIR = os.path.join(PARQUET_DIR, "intraday")
+if not os.path.exists(EOD_DIR):
+    os.makedirs(EOD_DIR)
+if not os.path.exists(INTRADAY_DIR):
+    os.makedirs(INTRADAY_DIR)
+
+
+EOD_OUTPUT_DIR = Path(EOD_DIR)
+INTRADAY_OUTPUT_DIR = Path(INTRADAY_DIR)
+CALENDAR_PATH = Path(os.path.join(PARQUET_DIR, "calendar.parquet"))
 
 async def fetch_eod(conn, start_date, end_date):
     query = f"""
@@ -88,9 +102,12 @@ async def main(start_date, end_date):
     await conn.close()
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        print("Usage: python update_parquet.py START_DATE END_DATE (format YYYY-MM-DD)")
-        sys.exit(1)
-    start_date = sys.argv[1]
-    end_date = sys.argv[2]
-    asyncio.run(main(start_date, end_date))
+    calendar = TradingCalendar.from_parquet(CALENDAR_PATH)
+    default_date = calendar.current_business_date(hour=20)
+
+    parser = argparse.ArgumentParser(description="Update parquet files from DB.")
+    parser.add_argument("--start_date", type=str, default=default_date, help="Start date (YYYY-MM-DD)")
+    parser.add_argument("--end_date", type=str, default=default_date, help="End date (YYYY-MM-DD)")
+    args = parser.parse_args()
+
+    asyncio.run(main(args.start_date, args.end_date))
