@@ -8,6 +8,7 @@ authors = ["Your Name <your@email.com>"]
 python = "^3.11"
 polars = "^1.20.0"
 asyncpg = "^0.30.0"
+holidays = "^0.71"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
