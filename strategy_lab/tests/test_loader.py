@@ -13,10 +13,10 @@ class DummyCalendar:
 def dummy_loader(tmp_path):
     # Assume dummy folders for EOD and intraday exist
     return DataLoader(
-        eod_folder=tmp_path / "eod",
-        intraday_folder=tmp_path / "intraday",
+        eod_path=tmp_path / "eod",
+        intraday_path=tmp_path / "intraday",
+        splits_path=tmp_path / "splits",
         calendar=DummyCalendar(),
-        adjuster=DummyAdjuster()
     )
 
 def test_load_eod(dummy_loader):
