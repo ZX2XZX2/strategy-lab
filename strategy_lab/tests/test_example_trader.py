@@ -4,7 +4,12 @@ from strategy_lab.execution.example_trader import ExampleTrader
 class DummyLoader:
     def load_intraday(self, ticker, start_date, end_date):
         import polars as pl
-        return pl.DataFrame({"time": ["09:30", "16:00"], "open": [100], "close": [110]})
+        return pl.DataFrame({
+            "time": ["09:30", "16:00"],
+            "open": [100, 105],    # two prices
+            "close": [110, 115]    # two prices
+        })
+
 
 class DummyCalendar:
     pass

@@ -8,6 +8,8 @@ class DummyAdjuster:
 class DummyCalendar:
     def current_business_date(self, hour=20):
         return "2024-01-01"
+    def date_range(self, start_date: str, end_date: str):
+        return [start_date]  # simple fake range (one date)
 
 @pytest.fixture
 def dummy_loader(tmp_path):

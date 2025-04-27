@@ -28,9 +28,6 @@ class MetricsCalculator:
 
     @staticmethod
     def compute_daily_returns(trade_results: dict) -> pl.DataFrame:
-        """
-        Aggregate trades by day and compute daily PnL returns.
-        """
         records = []
         for ticker, trades in trade_results.items():
             for trade in trades:
@@ -39,8 +36,8 @@ class MetricsCalculator:
                 side = trade["side"]
                 quantity = trade["quantity"]
                 sign = 1 if side == "sell" else -1
-                records.append((date, sign * price * quantity))
+                records.append({"date": date, "cash_flow": float(sign * price * quantity)})
 
-        df = pl.DataFrame(records, schema=["date", "cash_flow"])
-        daily_pnl = df.groupby("date").sum()
+        df = pl.DataFrame(records)
+        daily_pnl = df.group_by("date").agg(pl.col("cash_flow").sum())
         return daily_pnl
