@@ -2,7 +2,7 @@
 name = "strategy-lab"
 version = "0.1.0"
 description = "Backtesting and strategy research framework"
-authors = ["Your Name <your@email.com>"]
+authors = ["Your Name <you@example.com>"]
 
 [tool.poetry.dependencies]
 python = ">=3.10,<3.14"
@@ -14,7 +14,7 @@ holidays = "^0.71"
 pytest = "^7.4"
 
 [build-system]
-requires = ["poetry-core>=1.0.0"]
+requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.pytest.ini_options]
