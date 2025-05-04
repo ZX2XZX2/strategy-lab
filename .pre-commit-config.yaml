@@ -1,0 +1,26 @@
+# .pre-commit-config.yaml
+# Pre-commit hooks configuration for trading-bot repo
+
+repos:
+  - repo: git@github.com:astral-sh/ruff-pre-commit.git
+    rev: v0.11.8
+    hooks:
+      - id: ruff
+        args: ["--fix", "--unsafe-fixes"]  # Try to auto-fix even bigger issues
+
+  # - repo: local
+  #   hooks:
+  #     - id: detect-secrets-scan
+  #       name: Detect Secrets
+  #       entry: ./scripts/detect-secrets-hook
+  #       language: system
+  #       files: .*\.(py|txt|md|toml|yaml|yml)
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: end-of-file-fixer   # Ensure final newline at end of files
+      - id: trailing-whitespace # Remove trailing whitespace from all files
+      - id: check-yaml          # Validate YAML files
+      - id: check-added-large-files # Prevent huge accidental commits (default limit ~500KB)
+        args: ["--maxkb=2048"]  # Allow up to 2MB instead of 500KB
