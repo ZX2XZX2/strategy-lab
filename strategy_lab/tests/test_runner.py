@@ -1,4 +1,3 @@
-import pytest
 from strategy_lab.backtest.runner import BacktestRunner
 
 class DummyCalendar:

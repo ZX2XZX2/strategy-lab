@@ -1,5 +1,4 @@
 from typing import List, Dict
-import polars as pl
 
 class BacktestRunner:
     def __init__(self, calendar, loader, selector, trader):

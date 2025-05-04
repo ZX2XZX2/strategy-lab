@@ -1,4 +1,3 @@
-import pytest
 from strategy_lab.backtest.metrics import MetricsCalculator
 
 def test_compute_pnl():

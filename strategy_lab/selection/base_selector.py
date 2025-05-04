@@ -1,5 +1,4 @@
 from abc import ABC, abstractmethod
-import polars as pl
 from typing import List, Set
 
 class BaseSelector(ABC):

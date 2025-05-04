@@ -1,6 +1,5 @@
 from .base_trader import BaseTrader
 from typing import List
-import polars as pl
 
 class ExampleTrader(BaseTrader):
     def trade(self, ticker: str, as_of_date: str) -> List[dict]:

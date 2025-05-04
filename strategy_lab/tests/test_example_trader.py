@@ -1,4 +1,3 @@
-import pytest
 from strategy_lab.execution.example_trader import ExampleTrader
 
 class DummyLoader:

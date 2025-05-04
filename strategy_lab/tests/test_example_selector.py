@@ -1,4 +1,3 @@
-import pytest
 from strategy_lab.selection.example_selector import ExampleSelector
 
 class DummyLoader:

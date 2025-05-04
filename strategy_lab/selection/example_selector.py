@@ -9,7 +9,7 @@ class ExampleSelector(BaseSelector):
         """
         # Assume you already have a list of all tickers somehow
         all_tickers = self.loader.get_all_tickers()
-        
+
         eod_data = self.load_eod_data(all_tickers, as_of_date)
 
         volumes = []
