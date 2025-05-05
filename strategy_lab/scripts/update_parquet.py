@@ -1,81 +1,72 @@
 import argparse
 import asyncio
 import polars as pl
-import os
 import asyncpg
-from typing import List
-from pathlib import Path
+from strategy_lab.config import EOD_DIR, INTRADAY_DIR, SPLITS_DIR, DB_CONFIG, CALENDAR_PATH
 from strategy_lab.utils.trading_calendar import TradingCalendar
 
-DB_CONFIG = {
-    "user": os.getenv("POSTGRES_USER"),
-    "password": os.getenv("POSTGRES_PASSWORD"),
-    "port": os.getenv("POSTGRES_PORT"),
-    "database": os.getenv("POSTGRES_DB"),
-    "host": os.getenv("POSTGRES_HOST")
-}
+async def fetch_eod(conn, start_date: str, end_date: str) -> pl.DataFrame:
+    rows = await conn.fetch("""
+        SELECT stk, dt, o, hi, lo, c, v
+        FROM eod
+        WHERE dt BETWEEN $1 AND $2
+    """, start_date, end_date)
+    if not rows:
+        print("No EOD data found.")
+        return pl.DataFrame([])
+    df = pl.DataFrame(rows)
+    return df.rename({"stk": "ticker", "dt": "date", "o": "open", "hi": "high", "lo": "low", "c": "close", "v": "volume"})
 
-PARQUET_DIR = os.path.join(os.getenv("HOME"), "parquet")
-if not os.path.exists(PARQUET_DIR):
-    os.makedirs(PARQUET_DIR)
-EOD_DIR = os.path.join(PARQUET_DIR, "eod")
-INTRADAY_DIR = os.path.join(PARQUET_DIR, "intraday")
-if not os.path.exists(EOD_DIR):
-    os.makedirs(EOD_DIR)
-if not os.path.exists(INTRADAY_DIR):
-    os.makedirs(INTRADAY_DIR)
+async def fetch_intraday(conn, start_date: str, end_date: str) -> pl.DataFrame:
+    rows = await conn.fetch("""
+        SELECT stk, dt, o, hi, lo, c, v
+        FROM intraday
+        WHERE dt::date BETWEEN $1 AND $2
+    """, start_date, end_date)
+    if not rows:
+        print("No intraday data found.")
+        return pl.DataFrame([])
+    df = pl.DataFrame(rows)
+    return df.rename({"stk": "ticker", "dt": "timestamp", "o": "open", "hi": "high", "lo": "low", "c": "close", "v": "volume"})
 
-
-EOD_OUTPUT_DIR = Path(EOD_DIR)
-INTRADAY_OUTPUT_DIR = Path(INTRADAY_DIR)
-CALENDAR_PATH = Path(os.path.join(PARQUET_DIR, "calendar.parquet"))
-
-async def fetch_eod(conn: asyncpg.Connection, start_date: str, end_date: str) -> List[asyncpg.Record]:
+async def fetch_splits(conn: asyncpg.Connection, start_date: str, end_date: str) -> pl.DataFrame:
+    # Fetch splits data from the database
+    # and filter it based on the provided date range.
     query = f"""
-    SELECT stk, dt, o, hi, lo, c, v
-    FROM eod_table
-    WHERE dt BETWEEN '{start_date}' AND '{end_date}'
+    SELECT stk, dt, ratio
+    FROM dividends
+    WHERE ratio IS NOT NULL AND dt BETWEEN '{start_date}' AND '{end_date}'
     """
-    return await conn.fetch(query)
+    rows = await conn.fetch(query)
+    if not rows:
+        print("No splits data found for the given date range.")
+        return pl.DataFrame([])
+    df = pl.DataFrame(rows).rename({"stk": "ticker", "dt": "date"})
+    return df.sort(["ticker", "date"])
 
-async def fetch_intraday(conn: asyncpg.Connection, start_date: str, end_date: str) -> List[asyncpg.Record]:
-    query = f"""
-    SELECT stk, dt, o, hi, lo, c, v
-    FROM intraday_table
-    WHERE dt::date BETWEEN '{start_date}' AND '{end_date}'
-    """
-    return await conn.fetch(query)
-
-async def save_eod(records: List[asyncpg.Record]) -> None:
-    if not records:
-        return
-    df = pl.DataFrame(records).rename({
-        "stk": "ticker", "dt": "date", "o": "open", "hi": "high",
-        "lo": "low", "c": "close", "v": "volume"
-    })
+def save_eod(df: pl.DataFrame) -> None:
     df = df.with_columns([
         (pl.col("open") / 100).alias("open"),
         (pl.col("high") / 100).alias("high"),
         (pl.col("low") / 100).alias("low"),
         (pl.col("close") / 100).alias("close"),
+        (pl.col("volume") * 1000).alias("volume"),
     ])
-    for ticker in df.get_column("ticker").unique():
-        sub_df = df.filter(pl.col("ticker") == ticker)
-        path = EOD_OUTPUT_DIR / f"{ticker}.parquet"
-        if path.exists():
-            existing = pl.read_parquet(path)
-            updated = pl.concat([existing, sub_df]).unique(subset=["date"])
+    # Note: using .to_list() here because we're iterating over a single column
+    tickers = df.select("ticker").unique().get_column("ticker").to_list()
+    for ticker in tickers:
+        ticker_df = df.filter(pl.col("ticker") == ticker).drop("ticker")
+        filepath = EOD_DIR / f"{ticker}.parquet"
+        if filepath.exists():
+            existing = pl.read_parquet(filepath)
+            # Note: using vertical_relaxed to avoid strict schema checks
+            combined = pl.concat([existing, ticker_df], how="vertical_relaxed").unique(subset=["date"], keep="last")
         else:
-            updated = sub_df
-        updated.sort("date").write_parquet(path)
+            combined = ticker_df
+        combined = combined.sort("date")
+        combined.write_parquet(filepath)
 
-async def save_intraday(records: List[asyncpg.Record]) -> None:
-    if not records:
-        return
-    df = pl.DataFrame(records).rename({
-        "stk": "ticker", "dt": "timestamp", "o": "open", "hi": "high",
-        "lo": "low", "c": "close", "v": "volume", "oi": "open_interest"
-    })
+def save_intraday(df: pl.DataFrame):
     df = df.with_columns([
         (pl.col("open") / 100).alias("open"),
         (pl.col("high") / 100).alias("high"),
@@ -84,22 +75,67 @@ async def save_intraday(records: List[asyncpg.Record]) -> None:
         pl.col("timestamp").dt.strftime("%Y-%m-%d").alias("date"),
         pl.col("timestamp").dt.strftime("%H:%M:%S").alias("time")
     ])
-    for ticker in df.get_column("ticker").unique():
-        ticker_df = df.filter(pl.col("ticker") == ticker)
-        for date in ticker_df.get_column("date").unique():
-            day_df = ticker_df.filter(pl.col("date") == date)
-            ticker_dir = INTRADAY_OUTPUT_DIR / ticker
-            ticker_dir.mkdir(parents=True, exist_ok=True)
-            path = ticker_dir / f"{date}.parquet"
-            day_df.drop("ticker").write_parquet(path)
+    # Note: iterating over unique (ticker, date) pairs using iter_rows()
+    # avoids nested loops and unnecessary filtering, and is cleaner and more efficient.
+    for row in df.select(["ticker", "date"]).unique().iter_rows():
+        ticker, dt = row
+        date_str = str(dt)
+        # Note: we drop both ticker and date to make the parquet file smaller and avoid redundancy.
+        # The filename already encodes the date, and the folder encodes the ticker.
+        ticker_df = df.filter((pl.col("ticker") == ticker) & (pl.col("date") == dt)).drop(["ticker", "date"])
+        ticker_df = ticker_df.sort("time")
+        path = INTRADAY_DIR / ticker / f"{date_str}.parquet"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        ticker_df.write_parquet(path)
+
+def save_splits(df: pl.DataFrame):
+    output_file = SPLITS_DIR / "splits.parquet"
+
+    if output_file.exists():
+        existing = pl.read_parquet(output_file)
+        combined = pl.concat([existing, df], how="vertical_relaxed").unique(subset=["ticker", "date"])
+    else:
+        combined = df
+
+    combined = combined.sort(["ticker", "date"])
+    combined.write_parquet(output_file)
+    print(f"Updated {output_file} with {len(df)} new records")
+
+
+async def update_splits_parquet(start_date: str, end_date: str):
+    conn = await asyncpg.connect(**DB_CONFIG)
+    try:
+        df = await fetch_splits(conn, start_date, end_date)
+        if df.height > 0:
+            save_splits(df)
+    finally:
+        await conn.close()
+
+async def update_eod_parquet(start_date: str, end_date: str):
+    conn = await asyncpg.connect(**DB_CONFIG)
+    try:
+        df = await fetch_eod(conn, start_date, end_date)
+        if df.height > 0:
+            save_eod(df)
+    finally:
+        await conn.close()
+
+async def update_intraday_parquet(start_date: str, end_date: str):
+    conn = await asyncpg.connect(**DB_CONFIG)
+    try:
+        df = await fetch_intraday(conn, start_date, end_date)
+        if df.height > 0:
+            save_intraday(df)
+    finally:
+        await conn.close()
 
 async def main(start_date: str, end_date: str) -> None:
-    conn = await asyncpg.connect(**DB_CONFIG)
-    eod_records = await fetch_eod(conn, start_date, end_date)
-    intraday_records = await fetch_intraday(conn, start_date, end_date)
-    await save_eod(eod_records)
-    await save_intraday(intraday_records)
-    await conn.close()
+    await asyncio.gather(
+        update_eod_parquet(start_date, end_date),
+        update_intraday_parquet(start_date, end_date),
+        update_splits_parquet(start_date, end_date)
+    )
+    print(f"Updated EOD, Intraday, and Splits parquet files from {start_date} to {end_date}.")
 
 if __name__ == "__main__":
     calendar = TradingCalendar.from_parquet(CALENDAR_PATH)
