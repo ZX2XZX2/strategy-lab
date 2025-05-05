@@ -1,13 +1,13 @@
 import polars as pl
-from pathlib import Path
+from strategy_lab.config import EOD_DIR, INTRADAY_DIR, SPLITS_DIR
 from strategy_lab.utils.adjuster import Adjuster
 from strategy_lab.utils.trading_calendar import TradingCalendar
 
 class DataLoader:
-    def __init__(self, eod_path: Path, intraday_path: Path, splits_path: Path, calendar: TradingCalendar):
-        self.eod_path = eod_path
-        self.intraday_path = intraday_path
-        self.splits_path = splits_path
+    def __init__(self, calendar: TradingCalendar):
+        self.eod_path = EOD_DIR
+        self.intraday_path = INTRADAY_DIR
+        self.splits_path = SPLITS_DIR
         self.calendar = calendar
 
     def load_eod(self, ticker: str, as_of_date: str = None) -> pl.DataFrame:

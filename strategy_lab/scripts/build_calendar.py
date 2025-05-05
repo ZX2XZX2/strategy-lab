@@ -1,6 +1,7 @@
 import polars as pl
 from datetime import datetime, timedelta
 from pathlib import Path
+from strategy_lab.config import CALENDAR_PATH
 import argparse
 import holidays
 
@@ -22,7 +23,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Build trading calendar parquet file.")
     parser.add_argument("--start_year", type=int, default=1980, help="Start year (inclusive)")
     parser.add_argument("--end_year", type=int, default=2030, help="End year (inclusive)")
-    parser.add_argument("--output", type=str, required=True, help="Output path for the calendar.parquet")
+    parser.add_argument("--output", type=str, default=str(CALENDAR_PATH), help="Output path for the calendar.parquet")
     args = parser.parse_args()
 
     output_file = Path(args.output)
