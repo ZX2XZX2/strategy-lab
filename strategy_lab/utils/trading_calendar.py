@@ -1,42 +1,35 @@
+import bisect
 from datetime import datetime
 from typing import List
 import polars as pl
+from strategy_lab.config import CALENDAR_PATH
+
+# This module provides a TradingCalendar class to manage trading days and their operations.
+# It includes methods to generate a trading calendar from a parquet file, and
+# to return a range of trading days between two dates.
 
 class TradingCalendar:
-    def __init__(self, trading_days: List[str]):
-        """
-        Args:
-            trading_days (List[str]): List of trading days in 'YYYY-MM-DD' format, sorted ascending.
-        """
-        self.trading_days = trading_days
-        self._day_to_index = {day: idx for idx, day in enumerate(trading_days)}
-
-    @classmethod
-    def from_parquet(cls, calendar_path: str) -> "TradingCalendar":
+    def __init__(self, calendar_path: str = CALENDAR_PATH):
         """
         Instantiate a TradingCalendar from a parquet file.
         """
-        df = pl.read_parquet(calendar_path)
-        trading_days = df.sort("date").get_column("date").to_list()
-        return cls(trading_days)
-
-    @staticmethod
-    def build_calendar_from_dates(dates: List[str], output_path: str) -> None:
-        """
-        Build and save a trading calendar parquet file from a list of dates.
-        """
-        df = pl.DataFrame({"date": sorted(dates)})
-        df.write_parquet(output_path)
+        self.trading_days = pl.read_parquet(calendar_path).get_column("date").to_list()
 
     def date_range(self, start_date: str, end_date: str) -> List[str]:
         """
         Returns a list of trading days between start_date and end_date (inclusive).
         """
-        if start_date not in self._day_to_index or end_date not in self._day_to_index:
-            raise ValueError("Start or end date not in trading calendar.")
-        start_idx = self._day_to_index[start_date]
-        end_idx = self._day_to_index[end_date]
-        return self.trading_days[start_idx:end_idx+1]
+        # Adjust start to the next available business date if it's not in the calendar
+        start = bisect.bisect_left(self.trading_days, start_date)
+        if start >= len(self.trading_days):
+            return []
+
+        # Adjust end to the previous available business date if it's not in the calendar
+        end = bisect.bisect_right(self.trading_days, end_date) - 1
+        if end < 0:
+            return []
+
+        return self.trading_days[start : end + 1]
 
     def next(self, date: str, steps: int = 1) -> str:
         """
