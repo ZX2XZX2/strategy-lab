@@ -5,9 +5,13 @@ import polars as pl
 import asyncpg
 from strategy_lab.config import EOD_DIR, INTRADAY_DIR, SPLITS_DIR, DB_CONFIG
 from strategy_lab.utils.trading_calendar import TradingCalendar
+from strategy_lab.utils.logger import get_logger
 from tqdm.asyncio import tqdm
 
-async def fetch_eod(conn, start_date: str, end_date: str) -> pl.DataFrame:
+logger = get_logger(__name__)
+
+async def fetch_eod(conn: asyncpg.Connection, start_date: str, end_date: str) -> pl.DataFrame:
+    # Fetch EOD data from the database
     start_date = datetime.strptime(start_date, "%Y-%m-%d").date()
     end_date = datetime.strptime(end_date, "%Y-%m-%d").date()
     rows = await conn.fetch("""
@@ -16,13 +20,14 @@ async def fetch_eod(conn, start_date: str, end_date: str) -> pl.DataFrame:
         WHERE dt BETWEEN $1 AND $2
     """, start_date, end_date)
     if not rows:
-        print("No EOD data found.")
+        # If no rows are found, log a warning and return an empty DataFrame
+        logger.warning(f"No EOD data found between {start_date} and {end_date}.")
         return pl.DataFrame([])
     records = [dict(row) for row in rows]
     df = pl.DataFrame(records)
     return df.rename({"stk": "ticker", "dt": "date", "o": "open", "hi": "high", "lo": "low", "c": "close", "v": "volume"})
 
-async def fetch_intraday(conn, start_date: str, end_date: str) -> pl.DataFrame:
+async def fetch_intraday(conn: asyncpg.Connection, start_date: str, end_date: str) -> pl.DataFrame:
     start_date = datetime.strptime(start_date, "%Y-%m-%d").date()
     end_date = datetime.strptime(end_date, "%Y-%m-%d").date()
     rows = await conn.fetch("""
@@ -31,7 +36,7 @@ async def fetch_intraday(conn, start_date: str, end_date: str) -> pl.DataFrame:
         WHERE dt::date BETWEEN $1 AND $2
     """, start_date, end_date)
     if not rows:
-        print("No intraday data found.")
+        logger.warning(f"No intraday data found between {start_date} and {end_date}.")
         return pl.DataFrame([])
     records = [dict(row) for row in rows]
     df = pl.DataFrame(records)
@@ -47,7 +52,7 @@ async def fetch_splits(conn: asyncpg.Connection, start_date: str, end_date: str)
     """
     rows = await conn.fetch(query)
     if not rows:
-        print("No splits data found for the given date range.")
+        logger.warning("No splits data found for the given date range.")
         return pl.DataFrame([])
     records = [dict(row) for row in rows]
     df = pl.DataFrame(records).rename({"stk": "ticker", "dt": "date"})
@@ -108,7 +113,7 @@ def save_splits(df: pl.DataFrame):
 
     combined = combined.sort(["ticker", "date"])
     combined.write_parquet(output_file)
-    print(f"Updated {output_file} with {len(df)} new records")
+    logger.info(f"Updated {output_file} with {len(df)} new records")
 
 
 async def update_splits_parquet(start_date: str, end_date: str):
@@ -148,16 +153,19 @@ async def run_batch_updates(start_date: str, end_date: str):
     while current <= end_dt:
         month_end = (current.replace(day=1) + timedelta(days=32)).replace(day=1) - timedelta(days=1)
         month_end = min(month_end, end_dt)
-        print(f"Updating EOD data from {current} to {month_end}...")
+        logger.info(f"Updating EOD data from {current} to {month_end}...")
         await update_eod_parquet(str(current), str(month_end))
         current = month_end + timedelta(days=1)
+        logger.info(f"EOD data update completed for {current} to {month_end}.")
 
     # Splits: full period
-    print(f"Updating splits data from {start_date} to {end_date}...")
+    logger.info(f"Updating splits data from {start_date} to {end_date}...")
     await update_splits_parquet(start_date, end_date)
+    logger.info("Splits data update completed.")
 
-    # Intraday: one batch per day (parallel)
-    print("Updating intraday data in parallel...")
+    # Intraday: one batch per day (10 batches in parallel)
+    logger.info("Updating intraday data with concurrency limit (10)...")
+    intraday_progress = tqdm(total=len(dates), desc="Intraday Updates", unit="day")
 
     sem = asyncio.Semaphore(10)  # Limit concurrent intraday tasks to 10
 
@@ -167,13 +175,11 @@ async def run_batch_updates(start_date: str, end_date: str):
             intraday_progress.update(1)
             intraday_progress.set_postfix_str(f"Updated {day}")
 
-    print("Updating intraday data with concurrency limit (10)...")
-    intraday_progress = tqdm(total=len(dates), desc="Intraday Updates", unit="day")
 
     await asyncio.gather(*[
         limited_update(day) for day in dates
     ])
-    print("Intraday data update completed.")
+    logger.info("Intraday data update completed.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Batch convert EOD and intraday data to Parquet.")
@@ -182,4 +188,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     asyncio.run(run_batch_updates(args.start_date, args.end_date))
-    print(f"Batch update completed from {args.start_date} to {args.end_date}.")
+    logger.info(f"Batch update completed from {args.start_date} to {args.end_date}.")

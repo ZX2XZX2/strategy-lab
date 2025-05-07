@@ -2,6 +2,9 @@ import argparse
 from pathlib import Path
 from datetime import datetime, timedelta
 from export_metadata_by_date import export_metadata_by_date
+from strategy_lab.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 def batch_export(finance_db_path: Path, output_base: Path, start_date: str, end_date: str) -> None:
     start = datetime.strptime(start_date, "%Y-%m-%d")
@@ -14,9 +17,9 @@ def batch_export(finance_db_path: Path, output_base: Path, start_date: str, end_
         stock_file = output_base / f"stocks_{target_date}.parquet"
 
         if etf_file.exists() and stock_file.exists():
-            print(f"Skipping {target_date} (already exists)")
+            logger.warning(f"Skipping {target_date} (already exists)")
         else:
-            print(f"Exporting metadata for {target_date}...")
+            logger.info(f"Exporting metadata for {target_date}...")
             export_metadata_by_date(finance_db_path, output_base, target_date)
 
         date += timedelta(days=30)
