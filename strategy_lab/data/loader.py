@@ -32,4 +32,4 @@ class DataLoader:
 
     def _load_splits(self, ticker: str) -> pl.DataFrame:
         df = pl.read_parquet(self.splits_path)
-        return df.filter(pl.col("ticker") == ticker).sort("split_date")
+        return df.filter(pl.col("ticker") == ticker).sort("date")

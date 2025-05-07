@@ -5,6 +5,7 @@ import polars as pl
 import asyncpg
 from strategy_lab.config import EOD_DIR, INTRADAY_DIR, SPLITS_DIR, DB_CONFIG
 from strategy_lab.utils.trading_calendar import TradingCalendar
+from tqdm.asyncio import tqdm
 
 async def fetch_eod(conn, start_date: str, end_date: str) -> pl.DataFrame:
     start_date = datetime.strptime(start_date, "%Y-%m-%d").date()
@@ -156,11 +157,23 @@ async def run_batch_updates(start_date: str, end_date: str):
     await update_splits_parquet(start_date, end_date)
 
     # Intraday: one batch per day (parallel)
-    import asyncio
     print("Updating intraday data in parallel...")
+
+    sem = asyncio.Semaphore(10)  # Limit concurrent intraday tasks to 10
+
+    async def limited_update(day):
+        async with sem:
+            await update_intraday_parquet(day, day)
+            intraday_progress.update(1)
+            intraday_progress.set_postfix_str(f"Updated {day}")
+
+    print("Updating intraday data with concurrency limit (10)...")
+    intraday_progress = tqdm(total=len(dates), desc="Intraday Updates", unit="day")
+
     await asyncio.gather(*[
-        update_intraday_parquet(day, day) for day in dates
+        limited_update(day) for day in dates
     ])
+    print("Intraday data update completed.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Batch convert EOD and intraday data to Parquet.")
