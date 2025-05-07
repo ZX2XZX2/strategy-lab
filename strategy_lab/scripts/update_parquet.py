@@ -1,23 +1,29 @@
 import argparse
 import asyncio
+from datetime import datetime, timedelta
 import polars as pl
 import asyncpg
-from strategy_lab.config import EOD_DIR, INTRADAY_DIR, SPLITS_DIR, DB_CONFIG, CALENDAR_PATH
+from strategy_lab.config import EOD_DIR, INTRADAY_DIR, SPLITS_DIR, DB_CONFIG
 from strategy_lab.utils.trading_calendar import TradingCalendar
 
 async def fetch_eod(conn, start_date: str, end_date: str) -> pl.DataFrame:
+    start_date = datetime.strptime(start_date, "%Y-%m-%d").date()
+    end_date = datetime.strptime(end_date, "%Y-%m-%d").date()
     rows = await conn.fetch("""
         SELECT stk, dt, o, hi, lo, c, v
-        FROM eod
+        FROM eods
         WHERE dt BETWEEN $1 AND $2
     """, start_date, end_date)
     if not rows:
         print("No EOD data found.")
         return pl.DataFrame([])
-    df = pl.DataFrame(rows)
+    records = [dict(row) for row in rows]
+    df = pl.DataFrame(records)
     return df.rename({"stk": "ticker", "dt": "date", "o": "open", "hi": "high", "lo": "low", "c": "close", "v": "volume"})
 
 async def fetch_intraday(conn, start_date: str, end_date: str) -> pl.DataFrame:
+    start_date = datetime.strptime(start_date, "%Y-%m-%d").date()
+    end_date = datetime.strptime(end_date, "%Y-%m-%d").date()
     rows = await conn.fetch("""
         SELECT stk, dt, o, hi, lo, c, v
         FROM intraday
@@ -26,7 +32,8 @@ async def fetch_intraday(conn, start_date: str, end_date: str) -> pl.DataFrame:
     if not rows:
         print("No intraday data found.")
         return pl.DataFrame([])
-    df = pl.DataFrame(rows)
+    records = [dict(row) for row in rows]
+    df = pl.DataFrame(records)
     return df.rename({"stk": "ticker", "dt": "timestamp", "o": "open", "hi": "high", "lo": "low", "c": "close", "v": "volume"})
 
 async def fetch_splits(conn: asyncpg.Connection, start_date: str, end_date: str) -> pl.DataFrame:
@@ -41,7 +48,8 @@ async def fetch_splits(conn: asyncpg.Connection, start_date: str, end_date: str)
     if not rows:
         print("No splits data found for the given date range.")
         return pl.DataFrame([])
-    df = pl.DataFrame(rows).rename({"stk": "ticker", "dt": "date"})
+    records = [dict(row) for row in rows]
+    df = pl.DataFrame(records).rename({"stk": "ticker", "dt": "date"})
     return df.sort(["ticker", "date"])
 
 def save_eod(df: pl.DataFrame) -> None:
@@ -129,21 +137,36 @@ async def update_intraday_parquet(start_date: str, end_date: str):
     finally:
         await conn.close()
 
-async def main(start_date: str, end_date: str) -> None:
-    await asyncio.gather(
-        update_eod_parquet(start_date, end_date),
-        update_intraday_parquet(start_date, end_date),
-        update_splits_parquet(start_date, end_date)
-    )
-    print(f"Updated EOD, Intraday, and Splits parquet files from {start_date} to {end_date}.")
+async def run_batch_updates(start_date: str, end_date: str):
+    calendar = TradingCalendar()
+    dates = calendar.date_range(start_date, end_date)
+
+    # EOD: one batch per month
+    current = datetime.strptime(start_date, "%Y-%m-%d").date()
+    end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
+    while current <= end_dt:
+        month_end = (current.replace(day=1) + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+        month_end = min(month_end, end_dt)
+        print(f"Updating EOD data from {current} to {month_end}...")
+        await update_eod_parquet(str(current), str(month_end))
+        current = month_end + timedelta(days=1)
+
+    # Splits: full period
+    print(f"Updating splits data from {start_date} to {end_date}...")
+    await update_splits_parquet(start_date, end_date)
+
+    # Intraday: one batch per day (parallel)
+    import asyncio
+    print("Updating intraday data in parallel...")
+    await asyncio.gather(*[
+        update_intraday_parquet(day, day) for day in dates
+    ])
 
 if __name__ == "__main__":
-    calendar = TradingCalendar.from_parquet(CALENDAR_PATH)
-    default_date = calendar.current_business_date(hour=20)
-
-    parser = argparse.ArgumentParser(description="Update parquet files from DB.")
-    parser.add_argument("--start_date", type=str, default=default_date, help="Start date (YYYY-MM-DD)")
-    parser.add_argument("--end_date", type=str, default=default_date, help="End date (YYYY-MM-DD)")
+    parser = argparse.ArgumentParser(description="Batch convert EOD and intraday data to Parquet.")
+    parser.add_argument("--start-date", type=str, required=True, help="Start date (YYYY-MM-DD)")
+    parser.add_argument("--end-date", type=str, required=True, help="End date (YYYY-MM-DD)")
     args = parser.parse_args()
 
-    asyncio.run(main(args.start_date, args.end_date))
+    asyncio.run(run_batch_updates(args.start_date, args.end_date))
+    print(f"Batch update completed from {args.start_date} to {args.end_date}.")
