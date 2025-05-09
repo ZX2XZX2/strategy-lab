@@ -146,48 +146,52 @@ async def update_intraday_parquet(pool: asyncpg.Pool, start_date: str, end_date:
         except Exception as e:
             logger.error(f"Error fetching intraday data between {start_date} and {end_date}: {e}")
 
-async def run_batch_updates(pool: asyncpg.Pool, start_date: str, end_date: str):
+async def run_batch_updates(pool: asyncpg.Pool, start_date: str, end_date: str, intraday_only: bool, eod_only: bool):
     calendar = TradingCalendar()
     dates = calendar.date_range(start_date, end_date)
     try:
-        logger.info(f"Connected to the database. Updating data from {start_date} to {end_date}...")
-        # EOD: one batch per month
-        current = datetime.strptime(start_date, "%Y-%m-%d").date()
-        end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
-        while current <= end_dt:
-            month_end = (current.replace(day=1) + timedelta(days=32)).replace(day=1) - timedelta(days=1)
-            month_end = min(month_end, end_dt)
-            logger.info(f"Updating EOD data from {current} to {month_end}...")
-            await update_eod_parquet(pool, str(current), str(month_end))
-            # Move to the next month
-            current = month_end + timedelta(days=1)
-            logger.info(f"EOD data update completed for {current} to {month_end}.")
+        # EOD and splits update
+        if not intraday_only:
+            logger.info(f"Updating EOD and splits data from {start_date} to {end_date}...")
+            # EOD: one batch per month
+            current = datetime.strptime(start_date, "%Y-%m-%d").date()
+            end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
+            while current <= end_dt:
+                month_end = (current.replace(day=1) + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+                month_end = min(month_end, end_dt)
+                logger.info(f"Updating EOD data from {current} to {month_end}...")
+                await update_eod_parquet(pool, str(current), str(month_end))
+                # Move to the next month
+                current = month_end + timedelta(days=1)
+                logger.info(f"EOD data update completed for {current} to {month_end}.")
 
-        # Splits: full period
-        logger.info(f"Updating splits data from {start_date} to {end_date}...")
-        await update_splits_parquet(pool, start_date, end_date)
-        logger.info(f"Splits data update completed for {start_date} to {end_date}.")
+            # Splits: full period
+            logger.info(f"Updating splits data from {start_date} to {end_date}...")
+            await update_splits_parquet(pool, start_date, end_date)
+            logger.info(f"Splits data update completed for {start_date} to {end_date}.")
 
-        # Intraday: one batch per day (INTRADAY_CONCURENCY = 10 batches in parallel)
-        logger.info(f"Updating intraday data with concurrency limit ({INTRADAY_CONCURRENCY})...")
-        intraday_progress = tqdm(total=len(dates), desc="Intraday Updates", unit="day")
+        # Intraday update
+        if not eod_only:
+            # Intraday: one batch per day (INTRADAY_CONCURENCY = 10 batches in parallel)
+            logger.info(f"Updating intraday data with concurrency limit ({INTRADAY_CONCURRENCY})...")
+            intraday_progress = tqdm(total=len(dates), desc="Intraday Updates", unit="day")
 
-        sem = asyncio.Semaphore(INTRADAY_CONCURRENCY)  # Limit concurrent intraday tasks to INTRADAY_CONCURENCY
+            sem = asyncio.Semaphore(INTRADAY_CONCURRENCY)  # Limit concurrent intraday tasks to INTRADAY_CONCURENCY
 
-        async def limited_update(day):
-            async with sem:
-                # Update intraday data for the specific day
-                logger.info(f"Updating intraday data for {day}...")
-                await update_intraday_parquet(pool, day, day)
-                # Update progress bar
-                intraday_progress.update(1)
-                intraday_progress.set_postfix_str(f"Updated {day}")
+            async def limited_update(day):
+                async with sem:
+                    # Update intraday data for the specific day
+                    logger.info(f"Updating intraday data for {day}...")
+                    await update_intraday_parquet(pool, day, day)
+                    # Update progress bar
+                    intraday_progress.update(1)
+                    intraday_progress.set_postfix_str(f"Updated {day}")
 
-        await asyncio.gather(*[
-            limited_update(day) for day in dates
-        ])
-        logger.info("Intraday data update completed.")
-        intraday_progress.close()
+            await asyncio.gather(*[
+                limited_update(day) for day in dates
+            ])
+            logger.info("Intraday data update completed.")
+            intraday_progress.close()
     except Exception as e:
         logger.error(f"Failed to connect to the database: {e}")
     finally:
@@ -199,10 +203,12 @@ async def main():
     parser = argparse.ArgumentParser(description="Batch convert EOD and intraday data to Parquet.")
     parser.add_argument("--start-date", type=str, required=True, help="Start date (YYYY-MM-DD)")
     parser.add_argument("--end-date", type=str, required=True, help="End date (YYYY-MM-DD)")
+    parser.add_argument("--intraday-only", action="store_true", help="Only update intraday data")
+    parser.add_argument("--eod-only", action="store_true", help="Only update EOD and splits data")
     args = parser.parse_args()
 
     pool: asyncpg.Pool = await asyncpg.create_pool(**DB_CONFIG, min_size=1, max_size=INTRADAY_CONCURRENCY)
-    await run_batch_updates(pool, args.start_date, args.end_date)
+    await run_batch_updates(pool, args.start_date, args.end_date, args.intraday_only, args.eod_only)
     logger.info("Database connection pool closed.")
     logger.info(f"Batch update completed from {args.start_date} to {args.end_date}.")
 
