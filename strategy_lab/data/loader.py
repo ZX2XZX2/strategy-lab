@@ -51,12 +51,16 @@ class DataLoader:
             path = self.intraday_path / ticker / f"{date}.parquet"
             if path.exists():
                 df = pl.read_parquet(path)
+                date_str = path.stem
+                df = df.with_columns(
+                    pl.concat_str([pl.lit(date_str), pl.col("time")], separator=" ").str.strptime(pl.Datetime, "%Y-%m-%d %H:%M:%S").alias("timestamp")
+                )
                 frames.append(df)
         if not frames:
             return pl.DataFrame()
         df = pl.concat(frames)
         splits = self._load_splits(ticker)
-        return Adjuster.apply_splits(df, splits, date_col="date")
+        return Adjuster.apply_splits(df, splits, date_col="timestamp")
 
     def _load_splits(self, ticker: str) -> pl.DataFrame:
         df = pl.read_parquet(self.splits_path)
