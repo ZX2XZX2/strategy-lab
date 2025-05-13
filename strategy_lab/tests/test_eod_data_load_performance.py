@@ -36,31 +36,53 @@ def load_eod_data(parquet_path):
     return pl.scan_parquet(parquet_path)
 
 
-def calculate_activity(df, lazy=False):
+def calculate_activity(df, window=20, lazy=False):
     start_time = time.time()
     wap = (pl.col("open") + pl.col("high") + pl.col("low") + pl.col("close")) / 4
+    activity = pl.col("volume") * wap
+    avg_activity = activity.rolling_mean(window)
     if lazy:
-        df = df.with_columns((pl.col("volume") * wap).alias("activity"), wap.alias("weighted_avg_price"))
-        df = df.select(*[col for col in df.columns if col not in ["weighted_avg_price", "activity"]], "weighted_avg_price", "activity").collect()
+        df = df.with_columns(activity.alias("activity"), wap.alias("weighted_avg_price"), avg_activity.alias(f"activity_{window}")).collect()
     else:
-        df = df.with_columns((pl.col("volume") * wap).alias("activity"), wap.alias("weighted_avg_price"))
-        df = df.select(*[col for col in df.columns if col not in ["weighted_avg_price", "activity"]], "weighted_avg_price", "activity")
+        df = df.with_columns(activity.alias("activity"), wap.alias("weighted_avg_price"), avg_activity.alias(f"activity_{window}"))
     end_time = time.time()
     if df.is_empty():
         print("[No Data]")
     else:
         print(df)
-    print(f"Calculated 20-day average activity in {end_time - start_time:.4f} seconds")
-    df.write_parquet(cfg.ROOT_DIR / "activity.parquet")
+    print(f"Calculated {window}-day average activity in {end_time - start_time:.4f} seconds")
+    return df
+
+
+def calculate_relative_strength(df, window=252, lazy=False):
+    w1, w2, w3 = window // 4, window // 2, window
+    rs = 40 * (pl.col("close") / pl.col("close").shift(w1)) + 30 * (pl.col("close") / pl.col("close").shift(w2)) + 30 * (pl.col("close") / pl.col("close").shift(w3))
+    if lazy:
+        df = df.with_columns(rs.alias(f"relative_strength_{window}")).collect()
+    else:
+        df = df.with_columns(rs.alias(f"relative_strength_{window}"))
+    print(f"Calculated {window}-day relative strength:")
+    return df
+
+
+def calculate_intraday_volatility(df, window=20, lazy=False):
+    volatility = 100 * (pl.col("high") - pl.col("low")) / pl.col("weighted_avg_price")
+    avg_volatility = volatility.rolling_mean(window)
+    if lazy:
+        df = df.with_columns(volatility.alias("intraday_volatility"), avg_volatility.alias(f"intraday_volatility_{window}")).collect()
+    else:
+        df = df.with_columns(volatility.alias("intraday_volatility"), avg_volatility.alias(f"intraday_volatility_{window}"))
+    print(f"Calculated {window}-day intraday volatility:")
+    return df
 
 
 async def main():
     db_url = os.getenv("POSTGRES_CNX")
     table_name = 'eods'
-    start_date = '2023-01-01'
-    end_date = '2023-12-31'
-    parquet_path = cfg.ROOT_DIR / "2023.parquet"
-    save_to_parquet_flag = True
+    start_date = '2024-01-01'
+    end_date = '2025-12-31'
+    parquet_path = cfg.ROOT_DIR / "eod.parquet"
+    save_to_parquet_flag = False
 
     df = await download_eod_data(db_url, table_name, start_date, end_date)
     if save_to_parquet_flag:
@@ -70,7 +92,16 @@ async def main():
     else:
         lazy = False
 
+    df = calculate_activity(df, window=20, lazy=lazy)
+    df = calculate_activity(df, window=5, lazy=lazy)
+    df = calculate_intraday_volatility(df, window=20, lazy=lazy)
+    df = calculate_relative_strength(df, window=252, lazy=lazy)
+    df = calculate_relative_strength(df, window=45, lazy=lazy)
+    df = calculate_relative_strength(df, window=10, lazy=lazy)
+    df = calculate_relative_strength(df, window=4, lazy=lazy)
+
     calculate_activity(df, lazy=lazy)
+    df.write_parquet(cfg.ROOT_DIR / "indicators.parquet")
 
 
 if __name__ == '__main__':
