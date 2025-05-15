@@ -161,9 +161,9 @@ async def run_batch_updates(pool: asyncpg.Pool, start_date: str, end_date: str, 
                 month_end = min(month_end, end_dt)
                 logger.info(f"Updating EOD data from {current} to {month_end}...")
                 await update_eod_parquet(pool, str(current), str(month_end))
+                logger.info(f"EOD data update completed for {current} to {month_end}.")
                 # Move to the next month
                 current = month_end + timedelta(days=1)
-                logger.info(f"EOD data update completed for {current} to {month_end}.")
 
             # Splits: full period
             logger.info(f"Updating splits data from {start_date} to {end_date}...")
