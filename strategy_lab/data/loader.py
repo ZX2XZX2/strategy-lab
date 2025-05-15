@@ -1,9 +1,11 @@
+import asyncpg
 from datetime import datetime
 import polars as pl
-from strategy_lab.config import EOD_DIR, INTRADAY_DIR, SPLITS_DIR
+from strategy_lab.config import EOD_DIR, INTRADAY_DIR, SPLITS_DIR, DB_CONFIG
 from strategy_lab.utils.adjuster import Adjuster
 from strategy_lab.utils.trading_calendar import TradingCalendar
 from strategy_lab.utils.logger import get_logger
+from typing import List
 
 logger = get_logger(__name__)
 
@@ -13,11 +15,63 @@ logger = get_logger(__name__)
 # It also includes methods to apply splits to the loaded data using the Adjuster class.
 
 class DataLoader:
-    def __init__(self, calendar: TradingCalendar):
+    def __init__(self, calendar: TradingCalendar = TradingCalendar()):
         self.eod_path = EOD_DIR
         self.intraday_path = INTRADAY_DIR
         self.splits_path = SPLITS_DIR
         self.calendar = calendar
+
+    async def load_all_eod_data(self, start_date: str, end_date: str, tickers: list = None) -> List[pl.DataFrame]:
+        """
+        Load all EOD data for the specified date range and tickers.
+
+        Args:
+            start_date (str): The start date in "YYYY-MM-DD" format.
+            end_date (str): The end date in "YYYY-MM-DD" format.
+            tickers (list, optional): List of tickers to load. If None, load all available tickers.
+
+        Returns:
+            List[pl.DataFrame]: A list of polars dataframes containing adjusted for splits ticker EOD data.
+        """
+        start_date = datetime.strptime(start_date, "%Y-%m-%d").date()
+        end_date = datetime.strptime(end_date, "%Y-%m-%d").date()
+        if start_date > end_date:
+            raise ValueError("start_date must be less than or equal to end_date")
+        data_query = f"SELECT stk, dt, o, hi, lo, c, v FROM eods WHERE dt BETWEEN '{start_date}' AND '{end_date}'"
+        splits_query = f"SELECT stk, dt, ratio FROM dividends WHERE dt BETWEEN '{start_date}' AND '{end_date}'"
+        if tickers:
+            tickers_str = "', '".join(tickers)
+            data_query += f" AND stk IN ('{tickers_str}')"
+            splits_query += f" AND stk IN ('{tickers_str}')"
+        conn = None
+        try:
+            conn = await asyncpg.connect(**DB_CONFIG)
+            data = await conn.fetch(data_query)
+            splits = await conn.fetch(splits_query)
+        except Exception as e:
+            logger.error(f"Error loading data from PostgreSQL: {e}")
+            return []
+        finally:
+            if conn:
+                await conn.close()
+        data_records = [dict(row) for row in data]
+        split_records = [dict(row) for row in splits]
+        df = pl.DataFrame(data_records)
+        df = df.rename({"stk": "ticker", "dt": "date", "o": "open", "hi": "high", "lo": "low", "c": "close", "v": "volume"})
+
+        split_df = pl.DataFrame(split_records)
+        split_df = split_df.rename({"stk": "ticker", "dt": "date"})
+
+        # Split data by ticker
+        tickers = df['ticker'].unique().to_list()
+        ticker_dfs = []
+
+        for ticker in tickers:
+            ticker_df = df.filter(pl.col('ticker') == ticker)
+            ticker_df = Adjuster.apply_splits(ticker_df, split_df.filter(pl.col('ticker') == ticker), date_col='date')
+            ticker_dfs.append(ticker_df)
+
+        return ticker_dfs
 
     def load_eod(self, ticker: str, as_of_date: str = None, start_date: str = None, end_date: str = None) -> pl.DataFrame:
         path = self.eod_path / f"{ticker}.parquet"
