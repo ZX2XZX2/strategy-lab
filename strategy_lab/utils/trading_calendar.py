@@ -35,9 +35,7 @@ class TradingCalendar:
         """
         Returns the trading date 'steps' days after the given date.
         """
-        idx = self._day_to_index.get(date)
-        if idx is None:
-            raise ValueError(f"Date {date} not in trading calendar.")
+        idx = bisect.bisect_left(self.trading_days, date)
         new_idx = idx + steps
         if new_idx < 0 or new_idx >= len(self.trading_days):
             raise IndexError("Date navigation out of bounds.")
@@ -47,27 +45,34 @@ class TradingCalendar:
         """
         Returns the trading date 'steps' days before the given date.
         """
-        return self.next(date, steps=-steps)
-
-    def contains(self, date: str) -> bool:
-        """
-        Returns True if the date is a trading day.
-        """
-        return date in self._day_to_index
+        idx = bisect.bisect_left(self.trading_days, date)
+        new_idx = idx - steps
+        if new_idx < 0 or new_idx >= len(self.trading_days):
+            raise IndexError("Date navigation out of bounds.")
+        return self.trading_days[new_idx]
 
     def current_business_date(self, hour: int = 0) -> str:
         """
         Returns today's business date based on current time.
         If before specified hour and today is a business date, returns previous business date.
         """
-        now = datetime.now()
-        today = now.strftime("%Y-%m-%d")
-        if today in self._day_to_index:
-            if now.hour < hour:
-                return self.previous(today)
+        today = datetime.now().strftime("%Y-%m-%d")
+        current_hour = datetime.now().hour
+
+        # Find the insertion point for today
+        idx = bisect.bisect_left(self.trading_days, today)
+
+        # Check if today is a business day
+        if idx >= 0 and self.trading_days[idx] == today:
+            # If it's before the specified hour, return the previous business date
+            if current_hour < hour:
+                return self.trading_days[max(0, idx - 1)]
             else:
                 return today
-        for date in reversed(self.trading_days):
-            if date <= today:
-                return date
+
+        # If today is not a business day, return the previous business day
+        if idx >= 0:
+            return self.trading_days[idx]
+
+        # If the list is empty or today is before the first trading day
         raise ValueError("No valid business date found.")
