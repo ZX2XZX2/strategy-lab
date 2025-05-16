@@ -1,3 +1,4 @@
+import asyncio
 import asyncpg
 from datetime import datetime
 import polars as pl
@@ -5,6 +6,7 @@ from strategy_lab.config import EOD_DIR, INTRADAY_DIR, SPLITS_DIR, DB_CONFIG
 from strategy_lab.utils.adjuster import Adjuster
 from strategy_lab.utils.trading_calendar import TradingCalendar
 from strategy_lab.utils.logger import get_logger
+from tqdm import tqdm
 from typing import List
 
 logger = get_logger(__name__)
@@ -13,6 +15,7 @@ logger = get_logger(__name__)
 # from parquet files. It includes methods to load EOD data, intraday data, and splits data.
 # The DataLoader class is initialized with a TradingCalendar instance to manage trading days.
 # It also includes methods to apply splits to the loaded data using the Adjuster class.
+
 
 class DataLoader:
     def __init__(self, calendar: TradingCalendar = TradingCalendar()):
@@ -56,6 +59,7 @@ class DataLoader:
                 await conn.close()
         data_records = [dict(row) for row in data]
         split_records = [dict(row) for row in splits]
+        logger.info(f"Loaded {len(data_records)} records from eods and {len(split_records)} records from dividends.")
         df = pl.DataFrame(data_records)
         df = df.rename({"stk": "ticker", "dt": "date", "o": "open", "hi": "high", "lo": "low", "c": "close", "v": "volume"})
 
@@ -64,14 +68,21 @@ class DataLoader:
 
         # Split data by ticker
         tickers = df['ticker'].unique().to_list()
-        ticker_dfs = []
-
-        for ticker in tickers:
+        # Invoke process_ticker for each ticker in parallel
+        def process_ticker(ticker, df, split_df):
             ticker_df = df.filter(pl.col('ticker') == ticker)
             ticker_df = Adjuster.apply_splits(ticker_df, split_df.filter(pl.col('ticker') == ticker), date_col='date')
-            ticker_dfs.append(ticker_df)
+            return ticker_df
+        # Process tickers asynchronously using asyncio.to_thread
+        async def process_ticker_async(ticker):
+            return await asyncio.to_thread(process_ticker, ticker, df, split_df)
 
-        return ticker_dfs
+        tasks = [process_ticker_async(ticker) for ticker in tickers]
+        results = []
+        for task in tqdm(asyncio.as_completed(tasks), total=len(tasks), desc="Processing tickers"):
+            result = await task
+            results.append(result)
+        return results
 
     def load_eod(self, ticker: str, as_of_date: str = None, start_date: str = None, end_date: str = None) -> pl.DataFrame:
         path = self.eod_path / f"{ticker}.parquet"
