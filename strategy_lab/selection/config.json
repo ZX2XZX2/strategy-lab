@@ -1,0 +1,20 @@
+{
+    "indicators": {
+        "calculate_activity": [5, 20],
+        "calculate_intraday_volatility": [20],
+        "calculate_relative_strength": [4, 10, 45, 252]
+    },
+
+    "layers": [
+        {
+            "name": "activity_bucket",
+            "columns": ["bucket_activity_20", "bucket_activity_5"],
+            "weights": [0.5, 0.5]
+        },
+        {
+            "name": "overall_rank",
+            "columns": ["bucket_activity", "bucket_volatility", "bucket_relative_strength"],
+            "weights": [0.4, 0.3, 0.3]
+        }
+    ]
+}

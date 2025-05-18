@@ -1,9 +1,12 @@
 import argparse
 import asyncio
 import json
+import os
 import polars as pl
 from strategy_lab.data.loader import DataLoader
 from strategy_lab.utils.logger import get_logger
+from tqdm.asyncio import tqdm_asyncio
+from typing import List
 
 logger = get_logger(__name__)
 
@@ -28,8 +31,8 @@ def calculate_activity(df: pl.DataFrame, window: int = 20, lazy: bool = False) -
         df = df.with_columns(activity.alias("activity"), wap.alias("weighted_avg_price"), avg_activity.alias(f"activity_{window}"))
     if df.is_empty():
         print("[No Data]")
-    else:
-        print(df)
+    # else:
+    #     print(df)
     return df
 
 
@@ -51,7 +54,7 @@ def calculate_relative_strength(df: pl.DataFrame, window: int = 252, lazy: bool 
         df = df.with_columns(rs.alias(f"relative_strength_{window}")).collect()
     else:
         df = df.with_columns(rs.alias(f"relative_strength_{window}"))
-    print(f"Calculated {window}-day relative strength:")
+    # print(f"Calculated {window}-day relative strength:")
     return df
 
 
@@ -71,7 +74,7 @@ def calculate_intraday_volatility(df: pl.DataFrame, window: int = 20, lazy: bool
         df = df.with_columns(volatility.alias("intraday_volatility"), avg_volatility.alias(f"intraday_volatility_{window}")).collect()
     else:
         df = df.with_columns(volatility.alias("intraday_volatility"), avg_volatility.alias(f"intraday_volatility_{window}"))
-    print(f"Calculated {window}-day intraday volatility:")
+    # print(f"Calculated {window}-day intraday volatility:")
     return df
 
 
@@ -94,8 +97,8 @@ def weighted_average(df, prefix, weights):
     weighted_avg = weighted_sum / total_weight
     weighted_col_name = f"bucket_{prefix}"
     df = df.with_columns(weighted_avg.alias(weighted_col_name))
-    print(f"Calculated weighted average for {prefix} bucket as '{weighted_col_name}'.")
-    print(df.select(weighted_col_name).head(1))
+    # print(f"Calculated weighted average for {prefix} bucket as '{weighted_col_name}'.")
+    # print(df.select(weighted_col_name).head(1))
     return df
 
 
@@ -182,26 +185,96 @@ def calculate_aggregated_rank(df, config_path):
 
 #     df = filter_initial_rows(df, n=252)
 
-async def download_eod_data(start_date, end_date, tickers=None):
-    logger.info(f"Downloading EOD data from {start_date} to {end_date} for tickers: {tickers}")
+async def download_eod_data(start_date: str, end_date: str, max_window: int = 0, tickers: List[str] = None) -> List[pl.DataFrame]:
+    """
+    Download EOD data for a list of tickers from the database.
+    Args:
+        start_date (str): Start date in YYYY-MM-DD format.
+        end_date (str): End date in YYYY-MM-DD format.
+        max_window (int): Maximum window size for calculations.
+        tickers (List[str]): List of tickers to download data for.
+    Returns:
+        List[pl.DataFrame]: List of DataFrames containing EOD data for each ticker.
+    """
     data_loader = DataLoader()
+    start_date = data_loader.calendar.previous(start_date, max_window)
+    if tickers is None:
+        logger.info(f"Downloading EOD data from {start_date} to {end_date} for all tickers")
+    else:
+        logger.info(f"Downloading EOD data from {start_date} to {end_date} for tickers: {tickers}")
     dfs = await data_loader.load_all_eod_data(start_date, end_date, tickers)
     if len(dfs)< 10:
         for df in dfs:
             print(df)
     else:
         logger.info(f"Data loaded successfully for {len(dfs)} tickers.")
+    return dfs
+
+async def calculate_indicators(dfs: List[pl.DataFrame], config: dict, start_date: str) -> pl.DataFrame:
+
+    async def process_indicator(df, indicator, window):
+        func = globals().get(indicator)
+        if func:
+            # print(f"Calculating {indicator} with window {window}")
+            updated_df = await asyncio.to_thread(func, df, window)
+            # Combine the result with the original dataframe
+            df = df.hstack(updated_df.select([col for col in updated_df.columns if col not in df.columns]))
+            return df
+        else:
+            logger.warning(f"Warning: Function {indicator} not found!")
+            return df
+
+    async def process_all_indicators(df):
+        for indicator, windows in config['indicators'].items():
+            for window in windows:
+                df = await process_indicator(df, indicator, window)
+        return df
+
+    # Launch processing for all dataframes concurrently
+    tasks = [process_all_indicators(df) for df in dfs]
+    results = []
+    with tqdm_asyncio(desc="Calculating indicators", total=len(tasks)) as progress:
+        for task in tqdm_asyncio.as_completed(tasks):
+            result = await task
+            results.append(result)
+            progress.update(1)
+        progress.close()
+    return results
+
 
 async def main():
+
     parser = argparse.ArgumentParser(description="Batch convert EOD and intraday data to Parquet.")
     parser.add_argument("--start-date", type=str, required=True, help="Start date (YYYY-MM-DD)")
     parser.add_argument("--end-date", type=str, required=True, help="End date (YYYY-MM-DD)")
-    parser.add_argument("--intraday-only", action="store_true", help="Only update intraday data")
-    parser.add_argument("--eod-only", action="store_true", help="Only update EOD and splits data")
-    parser.parse_args()
+    parser.add_argument("--config-file", type=str, default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json"), help="Path to the config file")
+
+    args = parser.parse_args()
+    indicator_start_date = args.start_date
+    end_date = args.end_date
+    config_file = args.config_file
+    logger.info(f"Start date: {indicator_start_date}, End date: {end_date}, Config file: {config_file}")
+
+    with open(config_file, 'r') as f:
+        config = json.load(f)
+
+    max_window = 0
+    # Find the largest window size
+    for indicator, windows in config['indicators'].items():
+        max_window = max(max_window, max(windows))
+    logger.info(f"Largest window found: {max_window}")
+
+    ticker_dfs = await download_eod_data(indicator_start_date, end_date, max_window=max_window, tickers=["COIN", "MSTR", "SMCI"])
+    ticker_dfs = await calculate_indicators(ticker_dfs, config, indicator_start_date)
+    # Save the results to Parquet files
+    for df in ticker_dfs:
+        ticker = df.get_column("ticker").unique().to_list()[0]
+        parquet_path = os.path.join("data", f"{ticker}.parquet")
+        save_to_parquet(df, parquet_path)
+        logger.info(f"Saved {ticker} data to {parquet_path}")
 
 
 if __name__ == '__main__':
-    # asyncio.run(main())
-    asyncio.run(download_eod_data("2023-01-01", "2024-12-31"))
+    asyncio.run(main())
+    # asyncio.run(download_eod_data("2023-01-01", "2024-12-31"))
     # asyncio.run(download_eod_data("2024-08-01", "2024-08-09", ["COIN", "MSTR", "SMCI"]))
