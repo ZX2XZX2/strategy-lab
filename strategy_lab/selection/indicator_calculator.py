@@ -1,8 +1,10 @@
 import argparse
 import asyncio
+from datetime import datetime
 import json
 import os
 import polars as pl
+import strategy_lab.config as cfg
 from strategy_lab.data.loader import DataLoader
 from strategy_lab.utils.logger import get_logger
 from tqdm.asyncio import tqdm_asyncio
@@ -241,6 +243,54 @@ async def calculate_indicators(dfs: List[pl.DataFrame], config: dict, start_date
         progress.close()
     return results
 
+def fill_null_values(df: pl.DataFrame) -> pl.DataFrame:
+    # Get a list of all relative strength columns sorted by window size (ascending)
+    rel_strength_cols = sorted(
+        [col for col in df.columns if col.startswith("relative_strength_")],
+        key=lambda x: int(x.split("_")[-1])
+    )
+
+    # Start with the smallest window and propagate values to the larger ones
+    for i in range(1, len(rel_strength_cols)):
+        small_col = rel_strength_cols[i - 1]
+        large_col = rel_strength_cols[i]
+        # Fill nulls in the larger window column with the values from the smaller window column
+        df = df.with_columns(
+            pl.col(large_col).fill_null(pl.col(small_col)).alias(large_col)
+        )
+        print(f"Filled nulls in {large_col} with values from {small_col}")
+
+    return df
+
+async def process_and_save_indicators(dfs: list, start_date: str, output_path: str):
+
+    def filter_dataframe(df: pl.DataFrame, start_date) -> pl.DataFrame:
+
+        # Step 1: Filter rows by date
+        df = df.filter(pl.col("date") >= start_date)
+        # Step 2: Drop unnecessary columns
+        df = df.drop(["open", "high", "low", "close", "volume"])
+        return df
+
+    start_date = datetime.strptime(start_date, "%Y-%m-%d").date()
+
+    # Parallel filtering with progress bar
+    tasks = [asyncio.to_thread(filter_dataframe, df, start_date) for df in dfs]
+    filtered_dfs = []
+    with tqdm_asyncio(desc="Filtering DataFrames", total=len(tasks)) as progress:
+        for task in asyncio.as_completed(tasks):
+            result = await task
+            filtered_dfs.append(result)
+            progress.update(1)
+        progress.close()
+
+    # Concatenate all dataframes
+    combined_df = pl.concat(filtered_dfs)
+    sorted_df = combined_df.sort("date")
+    # Fill null values in relative strength columns
+    sorted_df = fill_null_values(sorted_df)
+    sorted_df.write_parquet(output_path, compression="zstd", row_group_size=12000)
+
 
 async def main():
 
@@ -248,6 +298,7 @@ async def main():
     parser.add_argument("--start-date", type=str, required=True, help="Start date (YYYY-MM-DD)")
     parser.add_argument("--end-date", type=str, required=True, help="End date (YYYY-MM-DD)")
     parser.add_argument("--config-file", type=str, default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json"), help="Path to the config file")
+    parser.add_argument("--dont-calc-indicators", action="store_true", help="Do not calculate indicators")
 
     args = parser.parse_args()
     indicator_start_date = args.start_date
@@ -264,14 +315,11 @@ async def main():
         max_window = max(max_window, max(windows))
     logger.info(f"Largest window found: {max_window}")
 
-    ticker_dfs = await download_eod_data(indicator_start_date, end_date, max_window=max_window, tickers=["COIN", "MSTR", "SMCI"])
+    ticker_dfs = await download_eod_data(indicator_start_date, end_date, max_window=max_window)
     ticker_dfs = await calculate_indicators(ticker_dfs, config, indicator_start_date)
-    # Save the results to Parquet files
-    for df in ticker_dfs:
-        ticker = df.get_column("ticker").unique().to_list()[0]
-        parquet_path = os.path.join("data", f"{ticker}.parquet")
-        save_to_parquet(df, parquet_path)
-        logger.info(f"Saved {ticker} data to {parquet_path}")
+    output_path = os.path.join(cfg.INDICATORS_DIR, f"{indicator_start_date}_{end_date}.parquet")
+    await process_and_save_indicators(ticker_dfs, indicator_start_date, output_path)
+    logger.info(f"Indicators calculated and saved to {output_path}")
 
 
 if __name__ == '__main__':
