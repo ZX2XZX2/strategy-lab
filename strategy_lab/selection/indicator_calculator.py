@@ -7,7 +7,9 @@ import polars as pl
 import strategy_lab.config as cfg
 from strategy_lab.data.loader import DataLoader
 from strategy_lab.utils.logger import get_logger
+from strategy_lab.utils.trading_calendar import TradingCalendar
 from tqdm.asyncio import tqdm_asyncio
+from tqdm import tqdm
 from typing import List
 
 logger = get_logger(__name__)
@@ -135,14 +137,6 @@ def rankize(df, column_name):
     return df
 
 
-def filter_initial_rows(df, n=252):
-    print(f"Filtering out the first {n} rows.")
-    df = df.slice(n, df.height - n)
-    print("Data after filtering:")
-    print(df.head(1))
-    return df
-
-
 def calculate_weighted_average(df, columns, weights, result_name):
     weighted_cols = [pl.col(col) * weight for col, weight in zip(columns, weights)]
     weighted_sum = sum(weighted_cols)
@@ -165,27 +159,6 @@ def calculate_aggregated_rank(df, config_path):
     print("Completed hierarchical weighted average calculation.")
     return df
 
-
-# async def main():
-#     db_url = 'postgresql://user:password@localhost:5432/eod'
-#     table_name = 'eod_data'
-#     start_date = '2023-01-01'
-#     end_date = '2023-12-31'
-#     parquet_path = 'data/eod_data.parquet'
-#     config_path = 'config/weighted_average.json'
-#     save_to_parquet_flag = True
-
-#     df = await download_eod_data(db_url, table_name, start_date, end_date)
-#     if save_to_parquet_flag:
-#         save_to_parquet(df, parquet_path)
-#         df = load_eod_data(parquet_path)
-#     else:
-#         pass
-
-#     # Calculate hierarchical weighted averages
-#     df = calculate_aggregated_rank(df, config_path)
-
-#     df = filter_initial_rows(df, n=252)
 
 async def download_eod_data(start_date: str, end_date: str, max_window: int = 0, tickers: List[str] = None) -> List[pl.DataFrame]:
     """
@@ -289,7 +262,65 @@ async def process_and_save_indicators(dfs: list, start_date: str, output_path: s
     sorted_df = combined_df.sort("date")
     # Fill null values in relative strength columns
     sorted_df = fill_null_values(sorted_df)
+    len_1 = len(sorted_df)
+    # Drop nulls first
+    sorted_df = sorted_df.drop_nulls()
+
+    # Identify float columns
+    float_cols = [col for col, dtype in zip(sorted_df.columns, sorted_df.dtypes) if dtype in (pl.Float32, pl.Float64)]
+
+    # Remove rows with NaNs in any float column
+    for col in float_cols:
+        sorted_df = sorted_df.filter(~pl.col(col).is_nan())
+
+    len_2 = len(sorted_df)
+    logger.info(f"Filtered DataFrame length before drop: {len_1}, after drop: {len_2}")
     sorted_df.write_parquet(output_path, compression="zstd", row_group_size=12000)
+
+
+def rank_and_bucket_indicators(start_date: str, end_date: str, config: dict):
+    parquet_path = os.path.join(cfg.INDICATORS_DIR, f"{start_date}_{end_date}.parquet")
+    date_range = TradingCalendar().date_range(start_date, end_date)
+    if not date_range:
+        logger.warning(f"No trading days found between {start_date} and {end_date}.")
+        return pl.DataFrame()
+    logger.info(f"Ranking and bucketizing indicators for {len(date_range)} dates, between {date_range[0]} and {date_range[-1]}")
+
+    # Get all indicator columns dynamically
+    indicator_cols = []
+    for indicator, windows in config['indicators'].items():
+        for window in windows:
+            indicator_cols.append(f"{indicator[10:]}_{window}")
+
+    def load_date(date: str) -> pl.DataFrame:
+        date = datetime.strptime(date, "%Y-%m-%d").date()
+        # Lazy load data for a specific date
+        lazy_df = pl.scan_parquet(parquet_path).filter(pl.col("date") == date)
+        df = lazy_df.collect()
+        return df
+
+    def rank_and_bucketize(df: pl.DataFrame, indicator_cols: list) -> pl.DataFrame:
+        # Rank and bucketize all indicators in one shot
+        rank_exprs = [pl.col(col).rank("dense").alias(f"rank_{col}") for col in indicator_cols]
+        bucket_exprs = [((pl.col(col) / pl.col(col).max()) * 99).cast(pl.Int32).alias(f"bucket_{col}") for col in indicator_cols]
+
+        # Apply the ranking and bucketizing in one go
+        df = df.with_columns(rank_exprs + bucket_exprs)
+        return df
+
+    processed_dfs = []
+    for date in tqdm(date_range, desc="Loading and processing dates"):
+        df = load_date(date)
+        df = rank_and_bucketize(df, indicator_cols)
+        processed_dfs.append(df)
+
+    # Concatenate all processed dataframes
+    combined_df = pl.concat(processed_dfs, how="vertical")
+
+    # Save the final DataFrame to Parquet
+    output_path = os.path.join(cfg.INDICATORS_DIR, f"ranked_{start_date}_{end_date}.parquet")
+    combined_df.write_parquet(output_path, compression="zstd", row_group_size=12000)
+    logger.info(f"Ranked indicators saved to {output_path}")
 
 
 async def main():
@@ -298,8 +329,8 @@ async def main():
     parser.add_argument("--start-date", type=str, required=True, help="Start date (YYYY-MM-DD)")
     parser.add_argument("--end-date", type=str, required=True, help="End date (YYYY-MM-DD)")
     parser.add_argument("--config-file", type=str, default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json"), help="Path to the config file")
-    parser.add_argument("--dont-calc-indicators", action="store_true", help="Do not calculate indicators")
-
+    parser.add_argument("--skip-indicators", action="store_true", help="Skip indicator calculation")
+    parser.add_argument("--skip-ranking", action="store_true", help="Skip ranking and bucketization")
     args = parser.parse_args()
     indicator_start_date = args.start_date
     end_date = args.end_date
@@ -315,12 +346,19 @@ async def main():
         max_window = max(max_window, max(windows))
     logger.info(f"Largest window found: {max_window}")
 
-    ticker_dfs = await download_eod_data(indicator_start_date, end_date, max_window=max_window)
-    ticker_dfs = await calculate_indicators(ticker_dfs, config, indicator_start_date)
-    output_path = os.path.join(cfg.INDICATORS_DIR, f"{indicator_start_date}_{end_date}.parquet")
-    await process_and_save_indicators(ticker_dfs, indicator_start_date, output_path)
-    logger.info(f"Indicators calculated and saved to {output_path}")
+    if not args.skip_indicators:
+        ticker_dfs = await download_eod_data(indicator_start_date, end_date, max_window=max_window)
+        ticker_dfs = await calculate_indicators(ticker_dfs, config, indicator_start_date)
+        output_path = os.path.join(cfg.INDICATORS_DIR, f"{indicator_start_date}_{end_date}.parquet")
+        await process_and_save_indicators(ticker_dfs, indicator_start_date, output_path)
+        logger.info(f"Indicators calculated and saved to {output_path}")
 
+    if not args.skip_ranking:
+        # Load the saved indicators
+        ranked_df = await rank_and_bucket_indicators(indicator_start_date, end_date, config)
+        output_path = os.path.join(cfg.INDICATORS_DIR, f"ranked_{indicator_start_date}_{end_date}.parquet")
+        ranked_df.write_parquet(output_path, compression="zstd", row_group_size=12000)
+        logger.info(f"Ranked indicators saved to {output_path}")
 
 if __name__ == '__main__':
     asyncio.run(main())
