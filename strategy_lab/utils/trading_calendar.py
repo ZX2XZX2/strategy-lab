@@ -25,7 +25,7 @@ class TradingCalendar:
             return []
 
         # Adjust end to the previous available business date if it's not in the calendar
-        end = bisect.bisect_right(self.trading_days, end_date) - 1
+        end = bisect.bisect_left(self.trading_days, end_date) - 1
         if end < 0:
             return []
 
