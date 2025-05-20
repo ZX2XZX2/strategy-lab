@@ -271,7 +271,7 @@ async def process_and_save_indicators(dfs: list, start_date: str, output_path: s
 
     # Remove rows with NaNs in any float column
     for col in float_cols:
-        sorted_df = sorted_df.filter(~pl.col(col).is_nan())
+        sorted_df = sorted_df.filter(~(pl.col(col).is_nan() | (pl.col(col) == float("inf")) | (pl.col(col) == float("-inf"))))
 
     len_2 = len(sorted_df)
     logger.info(f"Filtered DataFrame length before drop: {len_1}, after drop: {len_2}")
@@ -355,10 +355,7 @@ async def main():
 
     if not args.skip_ranking:
         # Load the saved indicators
-        ranked_df = await rank_and_bucket_indicators(indicator_start_date, end_date, config)
-        output_path = os.path.join(cfg.INDICATORS_DIR, f"ranked_{indicator_start_date}_{end_date}.parquet")
-        ranked_df.write_parquet(output_path, compression="zstd", row_group_size=12000)
-        logger.info(f"Ranked indicators saved to {output_path}")
+        rank_and_bucket_indicators(indicator_start_date, end_date, config)
 
 if __name__ == '__main__':
     asyncio.run(main())
