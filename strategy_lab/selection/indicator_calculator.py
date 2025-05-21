@@ -300,12 +300,12 @@ def rank_and_bucket_indicators(start_date: str, end_date: str, config: dict):
         return df
 
     def rank_and_bucketize(df: pl.DataFrame, indicator_cols: list) -> pl.DataFrame:
-        # Rank and bucketize all indicators in one shot
+        # Rank all indicators in one shot
         rank_exprs = [pl.col(col).rank("dense").alias(f"rank_{col}") for col in indicator_cols]
-        bucket_exprs = [((pl.col(col) / pl.col(col).max()) * 99).cast(pl.Int32).alias(f"bucket_{col}") for col in indicator_cols]
-
-        # Apply the ranking and bucketizing in one go
-        df = df.with_columns(rank_exprs + bucket_exprs)
+        df = df.with_columns(rank_exprs)
+        # Apply the bucketizing in one go
+        bucket_exprs = [((pl.col(f"rank_{col}") / (pl.col(f"rank_{col}").max() + 1)) * 99 + 1).cast(pl.Int32).alias(f"bucket_{col}") for col in indicator_cols]
+        df = df.with_columns(bucket_exprs)
         return df
 
     processed_dfs = []
