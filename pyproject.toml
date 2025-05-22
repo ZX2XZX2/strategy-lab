@@ -10,6 +10,7 @@ polars = "^1.20.0"
 asyncpg = "^0.30.0"
 holidays = "^0.71"
 tqdm = "^4.66.1"
+GitPython = "^3.1.44"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.5"
