@@ -7,6 +7,7 @@ EOD_DIR = ROOT_DIR / "eod"
 INTRADAY_DIR = ROOT_DIR / "intraday"
 SPLITS_DIR = ROOT_DIR / "splits"
 INDICATORS_DIR = ROOT_DIR / "indicators"
+METADATA_DIR = ROOT_DIR / "metadata"
 CALENDAR_PATH = ROOT_DIR / "calendar.parquet"
 
 DB_CONFIG = {
@@ -28,3 +29,5 @@ if not SPLITS_DIR.exists():
     os.makedirs(SPLITS_DIR)
 if not INDICATORS_DIR.exists():
     os.makedirs(INDICATORS_DIR)
+if not METADATA_DIR.exists():
+    os.makedirs(METADATA_DIR)

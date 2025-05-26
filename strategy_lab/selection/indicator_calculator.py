@@ -303,6 +303,9 @@ def top_n_stocks_by_rank(df: pl.DataFrame, config: dict) -> pl.DataFrame:
     Returns:
         pl.DataFrame: DataFrame with top n stocks by rank for each date.
     """
+    etfs = pl.read_csv(os.path.join(cfg.METADATA_DIR, "etfs.csv"))
+    df = df.join(etfs, on="ticker", how="anti")
+    df = df.filter((pl.col("bucket_activity_5") >= 90) | (pl.col("bucket_activity_20") >= 90))
     rank_column = config.get("selection", {}).get("selection_column", "rank_overall_rank")
     top_n = config.get("selection", {}).get("top_n", 15)
     if rank_column not in df.columns:
