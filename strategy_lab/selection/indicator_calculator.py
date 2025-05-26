@@ -90,45 +90,6 @@ def load_eod_data(parquet_path):
     return pl.scan_parquet(parquet_path)
 
 
-def weighted_average(df, prefix, weights):
-    bucket_cols = [col for col in df.columns if col.startswith(f"bucket_{prefix}")]
-    if len(bucket_cols) != len(weights):
-        print(f"Error: Number of columns with prefix '{prefix}' does not match the number of weights.")
-        return df
-    weighted_cols = [pl.col(col) * weight for col, weight in zip(bucket_cols, weights)]
-    weighted_sum = sum(weighted_cols)
-    total_weight = sum(weights)
-    weighted_avg = weighted_sum / total_weight
-    weighted_col_name = f"bucket_{prefix}"
-    df = df.with_columns(weighted_avg.alias(weighted_col_name))
-    # print(f"Calculated weighted average for {prefix} bucket as '{weighted_col_name}'.")
-    # print(df.select(weighted_col_name).head(1))
-    return df
-
-
-def calculate_overall_rank(df, weights):
-    bucket_cols = [col for col in df.columns if col.startswith("bucket_")]
-    if len(bucket_cols) != len(weights):
-        print("Error: Number of bucket columns does not match the number of weights.")
-        return df
-    weighted_cols = [pl.col(col) * weight for col, weight in zip(bucket_cols, weights)]
-    weighted_sum = sum(weighted_cols)
-    total_weight = sum(weights)
-    overall_rank = weighted_sum / total_weight
-    df = df.with_columns(overall_rank.alias("overall_rank"))
-    print("Calculated overall rank.")
-    print(df.select("overall_rank").head(1))
-    return df
-
-
-def bucketize(df, column_name):
-    bucket_col = f"bucket_{column_name}"
-    df = df.with_columns(((pl.col(column_name).rank(method="max") - 1) * 99 / (pl.col(column_name).count() - 1)).cast(pl.Int64).alias(bucket_col))
-    print(f"Calculated bucket for {column_name}.")
-    print(df.select(column_name, bucket_col).head(1))
-    return df
-
-
 def rankize(df, column_name):
     rank_col = f"rank_{column_name}"
     df = df.with_columns(pl.col(column_name).rank(method="dense").over("date").alias(rank_col))
@@ -148,14 +109,23 @@ def calculate_weighted_average(df, columns, weights, result_name):
     return df
 
 
-def calculate_aggregated_rank(df, config_path):
-    with open(config_path, 'r') as f:
-        config = json.load(f)
+def calculate_aggregated_rank(df: pl.DataFrame, config: dict) -> pl.DataFrame:
+    """
+    Calculate hierarchical weighted averages and ranks based on a configuration file.
+    Args:
+        df (pl.DataFrame): The DataFrame containing the data to process.
+        config_path (str): Path to the configuration file defining layers and weights.
+    Returns:
+        pl.DataFrame: DataFrame with calculated hierarchical weighted averages and ranks.
+    """
     for layer in config['layers']:
         name = layer['name']
         columns = layer['columns']
         weights = layer['weights']
         df = calculate_weighted_average(df, columns, weights, name)
+    overall_rank_col = layer['name']
+    df = rankize(df, overall_rank_col)
+
     print("Completed hierarchical weighted average calculation.")
     return df
 
@@ -323,6 +293,31 @@ def rank_and_bucket_indicators(start_date: str, end_date: str, config: dict):
     logger.info(f"Ranked indicators saved to {output_path}")
 
 
+def top_n_stocks_by_rank(df: pl.DataFrame, config: dict) -> pl.DataFrame:
+    """
+    Get the top n stocks by rank for each date.
+    Args:
+        df (pl.DataFrame): DataFrame containing 'date' and 'rank_column'.
+        rank_column (str): Column name to rank by.
+        n (int): Number of top stocks to return for each date.
+    Returns:
+        pl.DataFrame: DataFrame with top n stocks by rank for each date.
+    """
+    rank_column = config.get("selection", {}).get("selection_column", "rank_overall_rank")
+    top_n = config.get("selection", {}).get("top_n", 15)
+    if rank_column not in df.columns:
+        raise ValueError(f"Column '{rank_column}' not found in DataFrame.")
+    if "date" not in df.columns:
+        raise ValueError("DataFrame must contain a 'date' column.")
+
+    # For each date, sort by rank_column descending and get the top n
+    return (
+        df.sort(["date", rank_column], descending=[False, True])
+          .group_by("date", maintain_order=True)
+          .head(top_n)
+    )
+
+
 async def main():
 
     parser = argparse.ArgumentParser(description="Batch convert EOD and intraday data to Parquet.")
@@ -356,6 +351,12 @@ async def main():
     if not args.skip_ranking:
         # Load the saved indicators
         rank_and_bucket_indicators(indicator_start_date, end_date, config)
+
+    df = calculate_aggregated_rank(pl.read_parquet(os.path.join(cfg.INDICATORS_DIR, f"ranked_{indicator_start_date}_{end_date}.parquet")), config)
+    df = top_n_stocks_by_rank(df, config)
+    output_path = os.path.join(cfg.INDICATORS_DIR, f"top_n_{indicator_start_date}_{end_date}.csv")
+    df.write_csv(output_path)
+    logger.info(f"Top N stocks by rank saved to {output_path}")
 
 if __name__ == '__main__':
     asyncio.run(main())

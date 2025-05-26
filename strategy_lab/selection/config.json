@@ -12,9 +12,23 @@
             "weights": [0.5, 0.5]
         },
         {
+            "name": "volatility_bucket",
+            "columns": ["bucket_intraday_volatility_20"],
+            "weights": [1.0]
+        },
+        {
+            "name": "relative_strength_bucket",
+            "columns": ["bucket_relative_strength_4", "bucket_relative_strength_10", "bucket_relative_strength_45", "bucket_relative_strength_252"],
+            "weights": [0.1, 0.1, 0.3, 0.5]
+        },
+        {
             "name": "overall_rank",
-            "columns": ["bucket_activity", "bucket_volatility", "bucket_relative_strength"],
-            "weights": [0.4, 0.3, 0.3]
+            "columns": ["relative_strength_bucket", "volatility_bucket", "activity_bucket"],
+            "weights": [0.5, 0.4, 0.1]
         }
-    ]
+    ],
+    "selection": {
+        "top_n": 15,
+        "selection_column": "rank_overall_rank"
+    }
 }
