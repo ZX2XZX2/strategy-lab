@@ -1,3 +1,24 @@
+"""
+Indicator Calculator Module
+
+This module orchestrates the full stock selection process:
+
+1. Download historical EOD data for all tickers.
+2. Apply split adjustments and per-ticker preprocessing.
+3. Calculate configured indicators (activity, intraday volatility, relative strength).
+4. Fill missing values across indicator columns using smaller-window fallbacks.
+5. Clean data: drop rows with null, NaN, or inf values.
+6. Sort data by date and ticker.
+7. Rank, bucketize, and compute weighted average scores per row.
+8. Select top N stocks per date, based on overall rank.
+
+Optional:
+- If config.json flag `selection:filter_out_etfs` is true, ETFs are excluded from the top N selection.
+
+Outputs:
+- A cleaned, ranked, and filtered DataFrame ready for portfolio construction or downstream strategy use.
+"""
+
 import argparse
 import asyncio
 from datetime import datetime
