@@ -303,8 +303,14 @@ def top_n_stocks_by_rank(df: pl.DataFrame, config: dict) -> pl.DataFrame:
     Returns:
         pl.DataFrame: DataFrame with top n stocks by rank for each date.
     """
-    etfs = pl.read_csv(os.path.join(cfg.METADATA_DIR, "etfs.csv"))
-    df = df.join(etfs, on="ticker", how="anti")
+    filter_out_etfs = config.get("selection", {}).get("filter_out_etfs", False)
+    if filter_out_etfs:
+        etfs_path = os.path.join(cfg.METADATA_DIR, "etfs.csv")
+        if os.path.exists(etfs_path):
+            etfs = pl.read_csv(etfs_path)
+            df = df.join(etfs, on="ticker", how="anti")
+        else:
+            logger.warning(f"ETF metadata file not found at {etfs_path}")
     df = df.filter((pl.col("bucket_activity_5") >= 90) | (pl.col("bucket_activity_20") >= 90))
     rank_column = config.get("selection", {}).get("selection_column", "rank_overall_rank")
     top_n = config.get("selection", {}).get("top_n", 15)

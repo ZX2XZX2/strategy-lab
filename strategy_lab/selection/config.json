@@ -29,6 +29,7 @@
     ],
     "selection": {
         "top_n": 15,
-        "selection_column": "rank_overall_rank"
+        "selection_column": "rank_overall_rank",
+        "filter_out_etfs": true
     }
 }
