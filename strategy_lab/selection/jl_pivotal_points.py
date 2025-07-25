@@ -45,6 +45,17 @@ class StxJL:                            # keep the original public name
 
     # -----------------------  constructor  ----------------------------------
     def __init__(self, ts: StxTS, f: float, w: int = 20) -> None:
+        """
+        ts  - any object exposing .df     (Polars frame)
+                             .start       (row-offset of first bar)
+                             .pos         (current row pointer)
+                             .set_datetime(str)
+                             .next_ohlc()
+                             .current_date()
+                             .splits (dict of split-ratios keyed by date)
+        f   - Livermore 'penetration' factor (e.g. 3.0 ➜ 3×avgTrueRange)
+        w   - look-back window used when algorithm is initialised
+        """
         self.ts, self.f, self.w = ts, f, w
 
         # 1) build `hb4l` marker inside Polars
@@ -102,12 +113,12 @@ class StxJL:                            # keep the original public name
     # -------------  public driver  -----------------------------------------
     def jl(self, dt: str) -> List[list]:
         """Run the JL state machine up to <dt> (inclusive)."""
-        self.ts.set_day(dt, -1)
+        self.ts.set_datetime(dt, -1)
         start_idx = self.initjl()        # primes algorithm
         end_idx = self.ts.pos
 
         for i in range(start_idx, end_idx + 1):
-            self.ts.next_day()
+            self.ts.next_ohlc()
             self.nextjl()
 
         return self.jl_recs
@@ -116,7 +127,7 @@ class StxJL:                            # keep the original public name
     def initjl(self) -> int:
         ss = self.ts.start
         win = min(self.w, self.ts.pos - ss + 1)
-        self.ts.set_day(self.dates[ss + win - 1])      # fast date lookup
+        self.ts.set_datetime(self.dates[ss + win - 1])      # fast date lookup
 
         # Polars slice is zero-copy
         df0 = self.ts.df.slice(ss, win)
