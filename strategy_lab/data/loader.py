@@ -1,6 +1,6 @@
 import asyncio
 import asyncpg
-from datetime import datetime
+from datetime import datetime, timedelta
 import polars as pl
 from strategy_lab.config import EOD_DIR, INTRADAY_DIR, SPLITS_DIR, DB_CONFIG
 from strategy_lab.utils.adjuster import Adjuster
@@ -84,24 +84,36 @@ class DataLoader:
             results.append(result)
         return results
 
-    def load_eod(self, ticker: str, as_of_date: str = None, start_date: str = None, end_date: str = None) -> pl.DataFrame:
-        path = self.eod_path / f"{ticker}.parquet"
-        if not path.exists():
-            logger.warning(f"EOD data for {ticker} not found at {path}.")
-            return pl.DataFrame()
-
-        if start_date or end_date:
-            # Efficiently load only rows where the date >= start_date and date <= end_date
-            query = pl.scan_parquet(str(path))
-            if start_date:
-                start_date = datetime.strptime(start_date, "%Y-%m-%d").date()
-                query = query.filter(pl.col("date") >= start_date)
-            if end_date:
-                end_date = datetime.strptime(end_date, "%Y-%m-%d").date()
-                query = query.filter(pl.col("date") <= end_date)
-            df = query.collect()
+    def load_eod(
+        self,
+        ticker: str,
+        as_of_date: str | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        data_source: str = "db",
+    ) -> pl.DataFrame:
+        if data_source == "db":
+            df = asyncio.run(
+                self._fetch_eod_from_db(ticker, start_date or as_of_date, end_date or as_of_date)
+            )
         else:
-            df = pl.read_parquet(str(path))
+            path = self.eod_path / f"{ticker}.parquet"
+            if not path.exists():
+                logger.warning(f"EOD data for {ticker} not found at {path}.")
+                return pl.DataFrame()
+
+            if start_date or end_date:
+                # Efficiently load only rows where the date >= start_date and date <= end_date
+                query = pl.scan_parquet(str(path))
+                if start_date:
+                    start_date = datetime.strptime(start_date, "%Y-%m-%d").date()
+                    query = query.filter(pl.col("date") >= start_date)
+                if end_date:
+                    end_date = datetime.strptime(end_date, "%Y-%m-%d").date()
+                    query = query.filter(pl.col("date") <= end_date)
+                df = query.collect()
+            else:
+                df = pl.read_parquet(str(path))
 
         splits = self._load_splits(ticker)
         if as_of_date:
@@ -110,22 +122,104 @@ class DataLoader:
 
         return Adjuster.apply_splits(df, splits, date_col="date")
 
-    def load_intraday(self, ticker: str, start_date: str, end_date: str) -> pl.DataFrame:
-        frames = []
-        for date in self.calendar.date_range(start_date, end_date):
-            path = self.intraday_path / ticker / f"{date}.parquet"
-            if path.exists():
-                df = pl.read_parquet(path)
-                date_str = path.stem
-                df = df.with_columns(
-                    pl.concat_str([pl.lit(date_str), pl.col("time")], separator=" ").str.strptime(pl.Datetime, "%Y-%m-%d %H:%M:%S").alias("timestamp")
-                )
-                frames.append(df)
-        if not frames:
-            return pl.DataFrame()
-        df = pl.concat(frames)
+    def load_intraday(
+        self,
+        ticker: str,
+        start_date: str,
+        end_date: str,
+        data_source: str = "db",
+    ) -> pl.DataFrame:
+        if data_source == "db":
+            df = asyncio.run(self._fetch_intraday_from_db(ticker, start_date, end_date))
+        else:
+            frames = []
+            for date in self.calendar.date_range(start_date, end_date):
+                path = self.intraday_path / ticker / f"{date}.parquet"
+                if path.exists():
+                    parquet_df = pl.read_parquet(path)
+                    date_str = path.stem
+                    parquet_df = parquet_df.with_columns(
+                        pl.concat_str([pl.lit(date_str), pl.col("time")], separator=" ")
+                        .str.strptime(pl.Datetime, "%Y-%m-%d %H:%M:%S")
+                        .alias("timestamp")
+                    )
+                    frames.append(parquet_df)
+            df = pl.concat(frames) if frames else pl.DataFrame()
+
+            if df.is_empty():
+                try:
+                    df = asyncio.run(
+                        self._fetch_intraday_from_db(ticker, start_date, end_date)
+                    )
+                except Exception as e:
+                    logger.error(f"Error loading intraday data from database: {e}")
+
+        if df.is_empty():
+            return df
+
         splits = self._load_splits(ticker)
         return Adjuster.apply_splits(df, splits, date_col="timestamp")
+
+    async def _fetch_intraday_from_db(self, ticker: str, start_date: str, end_date: str) -> pl.DataFrame:
+        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1) - timedelta(seconds=1)
+        query = (
+            "SELECT dt, o, hi, lo, c, v FROM intraday "
+            "WHERE stk = $1 AND dt BETWEEN $2 AND $3 ORDER BY dt"
+        )
+        conn = await asyncpg.connect(**DB_CONFIG)
+        rows = await conn.fetch(query, ticker, start_dt, end_dt)
+        await conn.close()
+        if not rows:
+            return pl.DataFrame()
+        df = pl.DataFrame([dict(r) for r in rows]).rename(
+            {
+                "dt": "timestamp",
+                "o": "open",
+                "hi": "high",
+                "lo": "low",
+                "c": "close",
+                "v": "volume",
+            }
+        )
+        df = df.with_columns(pl.col("timestamp").dt.strftime("%H:%M:%S").alias("time"))
+        return df
+
+    async def _fetch_eod_from_db(
+        self,
+        ticker: str,
+        start_date: str | None,
+        end_date: str | None,
+    ) -> pl.DataFrame:
+        if start_date:
+            start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
+        else:
+            start_dt = datetime(1970, 1, 1).date()
+        if end_date:
+            end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
+        else:
+            end_dt = datetime.now().date()
+        query = (
+            "SELECT dt, o, hi, lo, c, v, oi FROM eods "
+            "WHERE stk = $1 AND dt BETWEEN $2 AND $3 ORDER BY dt"
+        )
+        conn = await asyncpg.connect(**DB_CONFIG)
+        rows = await conn.fetch(query, ticker, start_dt, end_dt)
+        await conn.close()
+        if not rows:
+            return pl.DataFrame()
+        df = pl.DataFrame([dict(r) for r in rows]).rename(
+            {
+                "dt": "date",
+                "o": "open",
+                "hi": "high",
+                "lo": "low",
+                "c": "close",
+                "v": "volume",
+                "oi": "open_interest",
+            }
+        )
+        return df
 
     def _load_splits(self, ticker: str) -> pl.DataFrame:
         df = pl.read_parquet(self.splits_path)

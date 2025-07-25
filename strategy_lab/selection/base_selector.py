@@ -11,11 +11,18 @@ class BaseSelector(ABC):
     def select(self, as_of_date: str) -> List[str]:
         pass
 
-    def load_eod_data(self, tickers: List[str], as_of_date: str) -> dict:
+    def load_eod_data(
+        self, tickers: List[str], as_of_date: str, data_source: str = "db"
+    ) -> dict:
         data = {}
         for ticker in tickers:
             if ticker in self.etfs:
                 continue
-            df = self.loader.load_eod(ticker, as_of_date)
+            try:
+                df = self.loader.load_eod(
+                    ticker, as_of_date=as_of_date, data_source=data_source
+                )
+            except TypeError:
+                df = self.loader.load_eod(ticker, as_of_date)
             data[ticker] = df
         return data
