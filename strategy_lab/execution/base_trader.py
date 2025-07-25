@@ -16,8 +16,17 @@ class BaseTrader(ABC):
         """
         pass
 
-    def load_intraday_data(self, ticker: str, start_date: str, end_date: str):
-        """
-        Utility to load intraday data for a ticker between two dates.
-        """
-        return self.loader.load_intraday(ticker, start_date, end_date)
+    def load_intraday_data(
+        self,
+        ticker: str,
+        start_date: str,
+        end_date: str,
+        data_source: str = "db",
+    ):
+        """Utility to load intraday data for a ticker between two dates."""
+        try:
+            return self.loader.load_intraday(
+                ticker, start_date, end_date, data_source=data_source
+            )
+        except TypeError:
+            return self.loader.load_intraday(ticker, start_date, end_date)
