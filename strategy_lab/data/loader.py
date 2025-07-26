@@ -18,7 +18,9 @@ logger = get_logger(__name__)
 
 
 class DataLoader:
-    def __init__(self, calendar: TradingCalendar = TradingCalendar()):
+    def __init__(self, calendar: TradingCalendar | None = None):
+        if calendar is None:
+            calendar = TradingCalendar()
         self.eod_path = EOD_DIR
         self.intraday_path = INTRADAY_DIR
         self.splits_path = SPLITS_DIR
@@ -91,11 +93,29 @@ class DataLoader:
         start_date: str | None = None,
         end_date: str | None = None,
         data_source: str = "db",
+        records: list[dict] | None = None,
     ) -> pl.DataFrame:
         if data_source == "db":
             df = asyncio.run(
                 self._fetch_eod_from_db(ticker, start_date or as_of_date, end_date or as_of_date)
             )
+        elif data_source == "dict":
+            if not records:
+                return pl.DataFrame()
+            df = pl.DataFrame(records).rename(
+                {
+                    "stk": "ticker",
+                    "dt": "date",
+                    "o": "open",
+                    "hi": "high",
+                    "lo": "low",
+                    "c": "close",
+                    "v": "volume",
+                    "oi": "open_interest",
+                }
+            )
+            if df.get_column("date").dtype != pl.Date:
+                df = df.with_columns(pl.col("date").str.strptime(pl.Date, "%Y-%m-%d"))
         else:
             path = self.eod_path / f"{ticker}.parquet"
             if not path.exists():
@@ -122,15 +142,91 @@ class DataLoader:
 
         return Adjuster.apply_splits(df, splits, date_col="date")
 
+    def add_eod(
+        self,
+        df: pl.DataFrame,
+        ticker: str,
+        as_of_date: str | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        data_source: str = "db",
+        records: list[dict] | None = None,
+    ) -> pl.DataFrame:
+        """Append additional EOD records to an existing DataFrame."""
+        new_df = self.load_eod(
+            ticker,
+            as_of_date=as_of_date,
+            start_date=start_date,
+            end_date=end_date,
+            data_source=data_source,
+            records=records,
+        )
+        if df.is_empty():
+            return new_df
+        if new_df.is_empty():
+            return df
+
+        last_date = df.get_column("date").max()
+        splits = self._load_splits(ticker)
+        if as_of_date:
+            as_dt = datetime.strptime(as_of_date, "%Y-%m-%d").date()
+            splits = splits.filter(pl.col("date") <= as_dt)
+        new_splits = splits.filter(pl.col("date") > last_date)
+        if not new_splits.is_empty():
+            df = Adjuster.apply_splits(df, new_splits, date_col="date")
+
+        return pl.concat([df, new_df]).sort("date")
+
+    def append_eod_records(
+        self,
+        df: pl.DataFrame,
+        ticker: str,
+        as_of_date: str | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        data_source: str = "db",
+        records: list[dict] | None = None,
+    ) -> pl.DataFrame:
+        """Wrapper for backwards compatibility."""
+        return self.add_eod(
+            df,
+            ticker,
+            as_of_date=as_of_date,
+            start_date=start_date,
+            end_date=end_date,
+            data_source=data_source,
+            records=records,
+        )
+
     def load_intraday(
         self,
         ticker: str,
         start_date: str,
         end_date: str,
         data_source: str = "db",
+        records: list[dict] | None = None,
+        as_of_date: str | None = None,
     ) -> pl.DataFrame:
         if data_source == "db":
             df = asyncio.run(self._fetch_intraday_from_db(ticker, start_date, end_date))
+        elif data_source == "dict":
+            if not records:
+                return pl.DataFrame()
+            df = pl.DataFrame(records).rename(
+                {
+                    "stk": "ticker",
+                    "dt": "timestamp",
+                    "o": "open",
+                    "hi": "high",
+                    "lo": "low",
+                    "c": "close",
+                    "v": "volume",
+                }
+            )
+            if df.get_column("timestamp").dtype != pl.Datetime:
+                df = df.with_columns(pl.col("timestamp").str.strptime(pl.Datetime, "%Y-%m-%d %H:%M:%S"))
+            if "time" not in df.columns:
+                df = df.with_columns(pl.col("timestamp").dt.strftime("%H:%M:%S").alias("time"))
         else:
             frames = []
             for date in self.calendar.date_range(start_date, end_date):
@@ -158,7 +254,63 @@ class DataLoader:
             return df
 
         splits = self._load_splits(ticker)
+        if as_of_date:
+            as_dt = datetime.strptime(as_of_date, "%Y-%m-%d").date()
+            splits = splits.filter(pl.col("date") <= as_dt)
         return Adjuster.apply_splits(df, splits, date_col="timestamp")
+
+    def add_intraday(
+        self,
+        df: pl.DataFrame,
+        ticker: str,
+        start_date: str,
+        end_date: str,
+        data_source: str = "db",
+        records: list[dict] | None = None,
+    ) -> pl.DataFrame:
+        """Append additional intraday records to an existing DataFrame."""
+        new_df = self.load_intraday(
+            ticker,
+            start_date=start_date,
+            end_date=end_date,
+            data_source=data_source,
+            records=records,
+            as_of_date=end_date,
+        )
+
+        if df.is_empty():
+            return new_df
+        if new_df.is_empty():
+            return df
+
+        last_ts = df.get_column("timestamp").max()
+        last_date = pl.Series([last_ts]).dt.date()[0]
+
+        splits = self._load_splits(ticker)
+        new_splits = splits.filter(pl.col("date") > last_date)
+        if not new_splits.is_empty():
+            df = Adjuster.apply_splits(df, new_splits, date_col="timestamp")
+
+        return pl.concat([df, new_df]).sort("timestamp")
+
+    def append_intraday_records(
+        self,
+        df: pl.DataFrame,
+        ticker: str,
+        start_date: str,
+        end_date: str,
+        data_source: str = "db",
+        records: list[dict] | None = None,
+    ) -> pl.DataFrame:
+        """Wrapper for backwards compatibility."""
+        return self.add_intraday(
+            df,
+            ticker,
+            start_date,
+            end_date,
+            data_source=data_source,
+            records=records,
+        )
 
     async def _fetch_intraday_from_db(self, ticker: str, start_date: str, end_date: str) -> pl.DataFrame:
         start_dt = datetime.strptime(start_date, "%Y-%m-%d")
@@ -223,4 +375,8 @@ class DataLoader:
 
     def _load_splits(self, ticker: str) -> pl.DataFrame:
         df = pl.read_parquet(self.splits_path)
+        if df.is_empty():
+            return df
+        if df.dtypes[1] != pl.Date:
+            df = df.with_columns(pl.col("date").str.strptime(pl.Date, "%Y-%m-%d"))
         return df.filter(pl.col("ticker") == ticker).sort("date")
