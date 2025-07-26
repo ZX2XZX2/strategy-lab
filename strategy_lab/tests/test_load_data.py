@@ -11,7 +11,7 @@ def print_data(df: pl.DataFrame, title: str):
             print(df)
     print("\n")
 
-def test_load_data(ticker: str, start_date: str = None, end_date: str = None):
+def load_data(ticker: str, start_date: str = None, end_date: str = None):
     trading_calendar = TradingCalendar()
     loader = DataLoader(trading_calendar)
 
@@ -38,4 +38,4 @@ if __name__ == "__main__":
     parser.add_argument("--start_date", type=str, required=True, help="Start date for intraday data (YYYY-MM-DD)")
     parser.add_argument("--end_date", type=str, required=True, help="End date for intraday data (YYYY-MM-DD)")
     args = parser.parse_args()
-    test_load_data(args.ticker, args.start_date, args.end_date)
+    load_data(args.ticker, args.start_date, args.end_date)
