@@ -21,12 +21,15 @@ c3e5b35, 2025-05-31) with these changes only:
 """
 from __future__ import annotations
 
+import argparse
 import sys
 from typing import List
 
+from dataclasses import dataclass
+
 import numpy as np
 import polars as pl
-from dataclasses import dataclass
+from strategy_lab.data.loader import DataLoader
 
 # --------------------------------  tiny record for API parity
 @dataclass
@@ -579,14 +582,69 @@ class StxJL:                            # keep the original public name
     # copy-paste them here or `from stxjl import <methods>` if you prefer.
     # For brevity of this answer, they are omitted, but the logic is intact.
 
-# ────────────────────────────────  CLI wrapper (unchanged)  ───────────────
+# ────────────────────────────────  CLI wrapper  ───────────────────────────
 if __name__ == "__main__":
-    df_path, dt, factor = sys.argv[1], sys.argv[2], float(sys.argv[3])
-    if df_path.endswith(".parquet"):
-        df = pl.read_parquet(df_path)
-    else:
-        df = pl.read_csv(df_path)
+    parser = argparse.ArgumentParser(
+        description="Calculate JL pivotal points for a ticker",
+    )
+    parser.add_argument("--stk", required=True, help="Ticker symbol")
+    parser.add_argument(
+        "--start_date", required=True, help="Start date for loading data"
+    )
+    parser.add_argument(
+        "--end_date", required=True, help="End date for loading data"
+    )
+    parser.add_argument(
+        "--data_type",
+        choices=["eod", "intraday"],
+        required=True,
+        help="Whether to load end-of-day or intraday data",
+    )
+    parser.add_argument(
+        "--dt",
+        required=True,
+        help="Date or timestamp as of which to calculate JL pivots",
+    )
+    parser.add_argument(
+        "--factor",
+        type=float,
+        required=True,
+        help="Livermore penetration factor",
+    )
+    args = parser.parse_args()
 
-    jl = StxJL(df, factor)
-    jl.jl(dt)
+    loader = DataLoader()
+    if args.data_type == "eod":
+        df = loader.load_eod(
+            args.stk,
+            start_date=args.start_date,
+            end_date=args.end_date,
+            as_of_date=args.end_date,
+        )
+        df = df.rename(
+            {
+                "date": "dt",
+                "high": "hi",
+                "low": "lo",
+                "close": "c",
+            }
+        )
+    else:
+        df = loader.load_intraday(
+            args.stk,
+            args.start_date,
+            args.end_date,
+            as_of_date=args.end_date,
+        )
+        df = df.rename(
+            {
+                "timestamp": "dt",
+                "high": "hi",
+                "low": "lo",
+                "close": "c",
+            }
+        )
+
+    jl = StxJL(df, args.factor)
+    jl.jl(args.dt)
     jl.jl_print()
