@@ -2,7 +2,7 @@ import os
 
 from pathlib import Path
 
-ROOT_DIR = Path(os.getenv("STRATEGY_LAB_DATA_DIR", "/tmp/strategy_lab_data"))
+ROOT_DIR = Path(os.getenv("STRATEGY_LAB_DATA_DIR", os.getenv("HOME")))
 EOD_DIR = ROOT_DIR / "eod"
 INTRADAY_DIR = ROOT_DIR / "intraday"
 SPLITS_DIR = ROOT_DIR / "splits"
