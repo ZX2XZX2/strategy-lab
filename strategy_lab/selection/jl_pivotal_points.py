@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import sys
 from typing import List
+from datetime import datetime
 
 from dataclasses import dataclass
 
@@ -614,12 +615,17 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     loader = DataLoader()
+
+    # parse the date range so it matches Polars' native dtypes
+    start_dt = datetime.fromisoformat(args.start_date).date()
+    end_dt = datetime.fromisoformat(args.end_date).date()
+
     if args.data_type == "eod":
         df = loader.load_eod(
             args.stk,
-            start_date=args.start_date,
-            end_date=args.end_date,
-            as_of_date=args.end_date,
+            start_date=start_dt.isoformat(),
+            end_date=end_dt.isoformat(),
+            as_of_date=end_dt.isoformat(),
         )
         df = df.rename(
             {
@@ -632,9 +638,9 @@ if __name__ == "__main__":
     else:
         df = loader.load_intraday(
             args.stk,
-            args.start_date,
-            args.end_date,
-            as_of_date=args.end_date,
+            start_dt.isoformat(),
+            end_dt.isoformat(),
+            as_of_date=end_dt.isoformat(),
         )
         df = df.rename(
             {
@@ -646,5 +652,14 @@ if __name__ == "__main__":
         )
 
     jl = StxJL(df, args.factor)
-    jl.jl(args.dt)
+
+    # Convert the pivot calculation date to match the df dtype
+    if df.get_column("dt").dtype == pl.Date:
+        calc_dt = datetime.fromisoformat(args.dt).date()
+    elif df.get_column("dt").dtype == pl.Datetime:
+        calc_dt = datetime.fromisoformat(args.dt)
+    else:
+        calc_dt = args.dt
+
+    jl.jl(calc_dt)
     jl.jl_print()
