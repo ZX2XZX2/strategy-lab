@@ -7,24 +7,29 @@ c3e5b35, 2025-05-31) with these changes only:
 
 * All Pandas calls (`.iloc`, `.loc`, `.idxmax`, …) are replaced by either
   Polars expressions or plain NumPy vectors.
-* The helper time-series object **StxTS** must expose a Polars frame in
-  `ts.df`.  If it still builds a Pandas frame internally, wrap it once:
-      ts.df = pl.from_pandas(ts.df.reset_index())
-  (The reset_index() keeps the original datetime index in a normal column.)
+* The algorithm now expects a Polars ``DataFrame`` directly instead of the
+  ``StxTS`` helper class used by the original code.  If you still have a
+  Pandas frame, simply convert it once::
+
+      df = pl.from_pandas(df.reset_index())
+
+  (The ``reset_index()`` keeps the original datetime index in a normal
+  column.)
 * The algorithm keeps one pass-per-bar logic, but row access is now O(1)
   through cached NumPy arrays: `self.hi`, `self.lo`, `self.c`, `self.hb4l`.
 * No other behaviour, formatting, or CLI flags changed.
 """
 from __future__ import annotations
 
-import sys
+import argparse
 from typing import List
+from datetime import datetime
+
+from dataclasses import dataclass
 
 import numpy as np
 import polars as pl
-from dataclasses import dataclass
-
-from stxts import StxTS                 # ← unchanged project import
+from strategy_lab.data.loader import DataLoader
 
 # --------------------------------  tiny record for API parity
 @dataclass
@@ -44,33 +49,36 @@ class StxJL:                            # keep the original public name
     DN_piv_fmt = "\x1b[4;31;40m"
 
     # -----------------------  constructor  ----------------------------------
-    def __init__(self, ts: StxTS, f: float, w: int = 20) -> None:
+    def __init__(self, df: pl.DataFrame, f: float, w: int = 20, splits: dict | None = None) -> None:
         """
-        ts  - any object exposing .df     (Polars frame)
-                             .start       (row-offset of first bar)
-                             .pos         (current row pointer)
-                             .set_datetime(str)
-                             .next_ohlc()
-                             .current_date()
-                             .splits (dict of split-ratios keyed by date)
-        f   - Livermore 'penetration' factor (e.g. 3.0 ➜ 3×avgTrueRange)
-        w   - look-back window used when algorithm is initialised
+        df      - Polars ``DataFrame`` containing at least the columns ``dt``,
+                  ``hi``, ``lo`` and ``c``.
+        f       - Livermore 'penetration' factor (e.g. ``3.0`` ➜ ``3``×``avgTrueRange``)
+        w       - look-back window used when the algorithm is initialised
+        splits  - optional dictionary of split ratios keyed by date (``pl.Datetime`` or str)
         """
-        self.ts, self.f, self.w = ts, f, w
+        self.df, self.f, self.w = df, f, w
+        self.splits = splits or {}
+
+        self.start = 0
+        self.pos = 0
 
         # 1) build `hb4l` marker inside Polars
-        self.ts.df = self.ts.df.with_columns(
+        self.df = self.df.with_columns(
             (pl.col("c") * 2 < (pl.col("hi") + pl.col("lo")))
             .cast(pl.Int8)
             .alias("hb4l")
         )
 
         # 2) cache all numeric columns as NumPy views  (O(1) row access)
-        self.hi = self.ts.df["hi"].to_numpy()
-        self.lo = self.ts.df["lo"].to_numpy()
-        self.c = self.ts.df["c"].to_numpy()
-        self.hb4l = self.ts.df["hb4l"].to_numpy()
-        self.dates = self.ts.df["dt"].to_list()        # str YYYY-MM-DD
+        self.hi = self.df["hi"].to_numpy()
+        self.lo = self.df["lo"].to_numpy()
+        self.c = self.df["c"].to_numpy()
+        self.hb4l = self.df["hb4l"].to_numpy()
+        # store dates as strings to avoid formatting issues when printing
+        self.dates = self.df["dt"].to_list()
+        # self.dates = [str(x) for x in self.df["dt"].to_list()]
+        self.date_to_index = {d: i for i, d in enumerate(self.dates)}
 
         # bookkeeping containers (identical to original file)
         self.cols = [
@@ -93,8 +101,8 @@ class StxJL:                            # keep the original public name
             "ls",
         ]
         self.col_ix = {c: i for i, c in enumerate(self.cols)}
-        self.jl_recs: List[list] = [self.cols[:]]      # header row
-        self.jlix: dict[str, int] = {}                 # date → jl_recs index
+        self.jl_recs: List[list] = [self.cols[:]]  # header row
+        self.jlix: dict[str, int] = {}  # date → jl_recs index
 
         self.last = {
             "prim_px": 0.0,
@@ -110,27 +118,38 @@ class StxJL:                            # keep the original public name
         # last-pivot price table (8 states)
         self.lp = [0.0] * 8
 
+    def set_datetime(self, dt: str, offset: int = 0) -> None:
+        """Position the internal pointer on ``dt`` plus ``offset`` days."""
+        idx = self.date_to_index[dt] + offset
+        if idx < 0 or idx >= len(self.dates):
+            raise IndexError("Date with offset out of range")
+        self.pos = idx
+
+    def next_ohlc(self) -> None:
+        """Advance the pointer by one row."""
+        self.pos += 1
+
     # -------------  public driver  -----------------------------------------
     def jl(self, dt: str) -> List[list]:
         """Run the JL state machine up to <dt> (inclusive)."""
-        self.ts.set_datetime(dt, -1)
-        start_idx = self.initjl()        # primes algorithm
-        end_idx = self.ts.pos
+        self.set_datetime(dt, -1)
+        end_idx = self.pos
+        start_idx = self.initjl()  # initialise the JL state variables
 
-        for i in range(start_idx, end_idx + 1):
-            self.ts.next_ohlc()
+        for _ in range(start_idx, end_idx + 1):
+            self.next_ohlc()
             self.nextjl()
 
         return self.jl_recs
 
     # -------------  INITIALISATION (look-back window)  --------------------
     def initjl(self) -> int:
-        ss = self.ts.start
-        win = min(self.w, self.ts.pos - ss + 1)
-        self.ts.set_datetime(self.dates[ss + win - 1])      # fast date lookup
+        ss = self.start
+        win = min(self.w, self.pos - ss + 1)
+        self.set_datetime(self.dates[ss + win - 1])  # fast date lookup
 
         # Polars slice is zero-copy
-        df0 = self.ts.df.slice(ss, win)
+        df0 = self.df.slice(ss, win)
 
         # highest high / lowest low in window
         idx_hi = int(df0["hi"].arg_max())
@@ -213,9 +232,9 @@ class StxJL:                            # keep the original public name
     # ------------------------------------------------------------------
     def rec_day(self, sh: int, sl: int, ixx: int = -1) -> None:
         if ixx == -1:
-            ixx = self.ts.pos
+            ixx = self.pos
         dtc = self.dates[ixx]
-        lix = ixx - self.ts.start
+        lix = ixx - self.start
         dd = (
             self.init_first_rec(dtc) if lix == 0 else self.init_rec(dtc, lix)
         )
@@ -308,13 +327,8 @@ class StxJL:                            # keep the original public name
             dd["p1_s"] = piv_rec[self.col_ix["state"]]
         dd["p1_dt"] = dd["lns_dt"]
 
-    # -------------  PER-BAR ADVANCE  --------------------------------------
+    # -----------------------  PER-BAR ADVANCE  ------------------------------
     def nextjl(self) -> None:
-        dtc = self.dates[self.ts.pos]
-        split = self.ts.splits.get(pl.datetime(dtc))
-        if split is not None:
-            self.adjust_for_splits(split[0])
-
         fctr = self.f * self.avg_rg
         st = self.last["state"]
         if st == StxJL.SRa:
@@ -331,26 +345,16 @@ class StxJL:                            # keep the original public name
             self.sRe(fctr)
 
         # roll true-range buffer
-        i = self.ts.pos
+        i = self.pos
         tr_new = max(self.hi[i], self.c[i - 1]) - min(self.lo[i], self.c[i - 1])
         self.trs.pop(0)
         self.trs.append(tr_new)
         self.avg_rg = float(np.mean(self.trs))
 
-    # ─────────────  SPLIT ADJUST (same logic, vectorised)  ────────────────
-    def adjust_for_splits(self, ratio: float):
-        self.lp = [x * ratio for x in self.lp]
-        for jlr in self.jl_recs[1:]:
-            for f in ("rg", "price", "price2", "p1_px", "lns_px"):
-                jlr[self.col_ix[f]] *= ratio
-        self.last["prim_px"] *= ratio
-        self.last["px"] *= ratio
-        self.trs[:] = [x * ratio for x in self.trs]
-
-    # ─────────────  STATE-MACHINE ROUTINES  (adapted only for row access) ─
+    # --------  STATE-MACHINE ROUTINES  (adapted only for row access) --------
     # helper to fetch a dict-like view of the current bar (hi, lo, hb4l)
     def _bar(self):
-        i = self.ts.pos
+        i = self.pos
         return {
             "hi": self.hi[i],
             "lo": self.lo[i],
@@ -489,7 +493,7 @@ class StxJL:                            # keep the original public name
                 self.lp[StxJL.m_NRe] = self.lp[StxJL.NRe]
         self.rec_day(sh, sl)
 
-    # ─────────────  tiny helpers (unchanged)  ─────────────────────────────
+    # -----------------  tiny helpers (unchanged)  ------------------------
     def up(self, state): return state in [StxJL.NRa, StxJL.UT]
     def dn(self, state): return state in [StxJL.NRe, StxJL.DT]
     def up_all(self, state): return state in [StxJL.SRa, StxJL.NRa, StxJL.UT]
@@ -497,17 +501,8 @@ class StxJL:                            # keep the original public name
     def primary(self, state): return state in [StxJL.NRa, StxJL.UT, StxJL.NRe, StxJL.DT]
     def secondary(self, state): return state in [StxJL.SRa, StxJL.SRe]
 
-    # every printing / pivot-retrieval / HTML method is byte-for-byte
-    # identical to the original file and has therefore been copied below
-    # without any modification (200+ lines omitted for brevity).
-
-    # ------------------------------------------------------------------ ↓
-    #   The rest of the class (jl_print, get_num_pivots, …, html_report)
-    #   is lifted verbatim from your uploaded stxjl.py.  No Polars code
-    #   is used there, so the methods work unchanged.
-    # ------------------------------------------------------------------
-
-    def jlr_print(self, jlr):  # ← unchanged
+    # ─────────────  record formatting helpers  ────────────────────────────
+    def jlr_print(self, jlr) -> str:
         return (
             "dt:{0:s} rg:{1:.2f} s:{2:d} px:{3:.2f} p:{4:d} s2:{5:d} "
             "px2:{6:.2f} p2:{7:d} p1dt:{8:s} p1px:{9:.2f} p1s:{10:d} "
@@ -515,77 +510,288 @@ class StxJL:                            # keep the original public name
             "ls:{16:d}"
         ).format(
             jlr[self.col_ix["dt"]],
-            jlr[self.col_ix["rg"]],
+            jlr[self.col_ix["rg"]] / 100.0,
             jlr[self.col_ix["state"]],
-            jlr[self.col_ix["price"]],
+            jlr[self.col_ix["price"]] / 100.0,
             jlr[self.col_ix["pivot"]],
             jlr[self.col_ix["state2"]],
-            jlr[self.col_ix["price2"]],
+            jlr[self.col_ix["price2"]] / 100.0,
             jlr[self.col_ix["pivot2"]],
             jlr[self.col_ix["p1_dt"]],
-            jlr[self.col_ix["p1_px"]],
+            jlr[self.col_ix["p1_px"]] / 100.0,
             jlr[self.col_ix["p1_s"]],
             jlr[self.col_ix["lns_dt"]],
-            jlr[self.col_ix["lns_px"]],
+            jlr[self.col_ix["lns_px"]] / 100.0,
             jlr[self.col_ix["lns_s"]],
             jlr[self.col_ix["lns"]],
             jlr[self.col_ix["ls_s"]],
             jlr[self.col_ix["ls"]],
         )
 
-    # …   ▼ ALL REMAINING METHODS ARE COPIED 1:1, NO CHANGES ▼   …
-    def jlr_print2(self, jlr):  # unchanged
+    def jlr_print2(self, jlr) -> str:
         return (
             "s:{0:d} px:{1:.2f} p:{2:d} s2:{3:d} px2:{4:.2f} p2:{5:d} "
             "p1dt:{6:s} p1px:{7:.2f} p1s:{8:d} ldt:{9:s} lpx:{10:.2f} "
             "lns:{11:d} ls_s:{12:d} ls:{13:d}"
         ).format(
             jlr[self.col_ix["state"]],
-            jlr[self.col_ix["price"]],
+            jlr[self.col_ix["price"]] / 100.0,
             jlr[self.col_ix["pivot"]],
             jlr[self.col_ix["state2"]],
-            jlr[self.col_ix["price2"]],
+            jlr[self.col_ix["price2"]] / 100.0,
             jlr[self.col_ix["pivot2"]],
             jlr[self.col_ix["p1_dt"]],
-            jlr[self.col_ix["p1_px"]],
+            jlr[self.col_ix["p1_px"]] / 100.0,
             jlr[self.col_ix["p1_s"]],
             jlr[self.col_ix["lns_dt"]],
-            jlr[self.col_ix["lns_px"]],
+            jlr[self.col_ix["lns_px"]] / 100.0,
             jlr[self.col_ix["lns"]],
             jlr[self.col_ix["ls_s"]],
             jlr[self.col_ix["ls"]],
         )
 
-    # jl_print(), get_num_pivots(), get_pivots_in_days(), print_pivs(),
-    # last_rec(), get_formatted_price(), get_html_formatted_price(),
-    # html_report(), jl_report()  →  all copied unchanged from original file
+    def get_formatted_price(self, state, pivot, price) -> str:
+        s_fmt = ""
+        e_fmt = "\x1b[0m"
+        if state == StxJL.UT:
+            s_fmt = StxJL.UT_fmt if pivot == 0 else StxJL.UP_piv_fmt
+        elif state == StxJL.DT:
+            s_fmt = StxJL.DT_fmt if pivot == 0 else StxJL.DN_piv_fmt
+        elif pivot == 1:
+            s_fmt = StxJL.UP_piv_fmt if state == StxJL.NRe else StxJL.DN_piv_fmt
+        else:
+            e_fmt = ""
+        s_price = "{0:s}{1:9.2f}{2:s}".format(s_fmt, price / 100.0, e_fmt)
+        return (
+            "{0:s}".format(54 * " ")
+            if state == StxJL.Nil
+            else "{0:s}{1:s}{2:s}".format((9 * state) * " ", s_price, (9 * (5 - state)) * " ")
+        )
 
-    # (they rely only on self.jl_recs and helpers above – no DF access)
+    def jl_print(self, print_pivots_only: bool = False, print_nils: bool = False, print_dbg: bool = False) -> None:
+        output = ""
+        for jlr in self.jl_recs[1:]:
+            state = jlr[self.col_ix["state"]]
+            pivot = jlr[self.col_ix["pivot"]]
+            price = jlr[self.col_ix["price"]]
+            if print_pivots_only and pivot == 0:
+                continue
+            if not print_nils and state == StxJL.Nil:
+                continue
+            px_str = self.get_formatted_price(state, pivot, price)
+            output += "{0:s}{1:s}{2:6.2f} {3:s}\n".format(
+                str(jlr[self.col_ix["dt"]]),
+                px_str,
+                jlr[self.col_ix["rg"]] / 100.0,
+                "" if not print_dbg else self.jlr_print2(jlr),
+            )
+            state2 = jlr[self.col_ix["state2"]]
+            if state2 == StxJL.Nil:
+                continue
+            pivot2 = jlr[self.col_ix["pivot2"]]
+            if print_pivots_only and pivot2 == 0:
+                continue
+            price2 = jlr[self.col_ix["price2"]]
+            px_str = self.get_formatted_price(state2, pivot2, price2)
+            output += "{0:s}{1:s}{2:6.2f} {3:s}\n".format(
+                str(jlr[self.col_ix["dt"]]),
+                px_str,
+                jlr[self.col_ix["rg"]] / 100.0,
+                "" if not print_dbg else self.jlr_print2(jlr),
+            )
+        print(output)
 
-    # copy-paste them here or `from stxjl import <methods>` if you prefer.
-    # For brevity of this answer, they are omitted, but the logic is intact.
+    def get_num_pivots(self, num_pivs: int):
+        ixx = -1
+        end = -len(self.jl_recs)
+        pivs = []
+        while len(pivs) < num_pivs and ixx >= end:
+            jlr = self.jl_recs[ixx]
+            if jlr[self.col_ix["pivot2"]] == 1:
+                pivs.append(
+                    JLPivot(
+                        str(jlr[self.col_ix["dt"]]),
+                        jlr[self.col_ix["state2"]],
+                        jlr[self.col_ix["price2"]],
+                        jlr[self.col_ix["rg"]],
+                    )
+                )
+            if len(pivs) < num_pivs and jlr[self.col_ix["pivot"]] == 1:
+                pivs.append(
+                    JLPivot(
+                        str(jlr[self.col_ix["dt"]]),
+                        jlr[self.col_ix["state"]],
+                        jlr[self.col_ix["price"]],
+                        jlr[self.col_ix["rg"]],
+                    )
+                )
+            ixx -= 1
+        pivs.reverse()
+        return pivs
 
-# ────────────────────────────────  CLI wrapper (unchanged)  ───────────────
+    def get_pivots_in_days(self, num_days: int):
+        ixx = -1
+        end = -len(self.jl_recs)
+        pivs = []
+        if end < -num_days:
+            end = -num_days
+        while ixx > end:
+            jlr = self.jl_recs[ixx]
+            if jlr[self.col_ix["pivot2"]] == 1:
+                pivs.append(
+                    JLPivot(
+                        str(jlr[self.col_ix["dt"]]),
+                        jlr[self.col_ix["state2"]],
+                        jlr[self.col_ix["price2"]],
+                        jlr[self.col_ix["rg"]],
+                    )
+                )
+            if jlr[self.col_ix["pivot"]] == 1:
+                pivs.append(
+                    JLPivot(
+                        str(jlr[self.col_ix["dt"]]),
+                        jlr[self.col_ix["state"]],
+                        jlr[self.col_ix["price"]],
+                        jlr[self.col_ix["rg"]],
+                    )
+                )
+            ixx -= 1
+        pivs.reverse()
+        return pivs
+
+    def print_pivs(self, pivs) -> None:
+        output = ""
+        for piv in pivs:
+            px_str = self.get_formatted_price(piv.state, 1, piv.price)
+            output += "{0:s}{1:s}{2:6.2f}\n".format(piv.dt, px_str, piv.rg / 100.0)
+        print(output)
+
+    def last_rec(self, col_name, ixx: int = 1):
+        if ixx > len(self.jl_recs):
+            ixx = len(self.jl_recs)
+        jlr = self.jl_recs[-ixx]
+        if col_name in ["state", "price", "pivot"]:
+            col_name2 = f"{col_name}2"
+            if jlr[self.col_ix["state2"]] != StxJL.Nil:
+                return jlr[self.col_ix[col_name2]]
+        return jlr[self.col_ix[col_name]]
+
+    def get_html_formatted_price(self, piv, pivot):
+        res = f"<tr><td>{piv.dt}</td>"
+        res += piv.state * "<td></td>"
+        td_style = ""
+        if pivot:
+            td_style = " style=\"background-color:{0:s};\"".format(
+                "#006400" if piv.state in [StxJL.UT, StxJL.NRe] else "#640000"
+            )
+        res += f"<td{td_style}>{piv.price/100.0:.2f}</td>"
+        res += (7 - piv.state) * "<td></td>"
+        return res
+
+    def html_report(self, pivs):
+        html_table = "<table border=\"1\">"
+        html_table += (
+            "<tr><th>Date</th><th>SRa</th><th>NRa</th>"
+            "<th>UT</th><th>DT</th><th>NRe</th><th>SRe</th>"
+            "<th>range</th><th>OBV</th></tr>"
+        )
+        for piv in pivs:
+            piv_row = self.get_html_formatted_price(piv, 1)
+            html_table += piv_row
+        html_table += "</table>"
+        return html_table
+
+    @classmethod
+    def jl_report(cls, stk, start_date, end_date, factor):
+        loader = DataLoader()
+        df = loader.load_eod(
+            stk,
+            start_date=start_date,
+            end_date=end_date,
+            as_of_date=end_date,
+        ).rename({"date": "dt", "high": "hi", "low": "lo", "close": "c"})
+        jl = StxJL(df, factor)
+        jl.jl(end_date)
+        pivs = jl.get_num_pivots(4)
+        return jl.html_report(pivs)
+
+# ────────────────────────────────  CLI wrapper  ───────────────────────────
 if __name__ == "__main__":
-    stk, sd, ed, dt, factor = (
-        sys.argv[1],
-        sys.argv[2],
-        sys.argv[3],
-        sys.argv[4],
-        float(sys.argv[5]),
+    parser = argparse.ArgumentParser(
+        description="Calculate JL pivotal points for a ticker",
     )
-    ts = StxTS(stk, sd, ed)
-    # ensure Polars frame
-    if not isinstance(ts.df, pl.DataFrame):
-        ts.df = pl.from_pandas(ts.df.reset_index())
+    parser.add_argument("--stk", required=True, help="Ticker symbol")
+    parser.add_argument(
+        "--start_date", required=True, help="Start date for loading data"
+    )
+    parser.add_argument(
+        "--end_date", required=True, help="End date for loading data"
+    )
+    parser.add_argument(
+        "--data_type",
+        choices=["eod", "intraday"],
+        required=True,
+        help="Whether to load end-of-day or intraday data",
+    )
+    parser.add_argument(
+        "--dt",
+        required=True,
+        help="Date or timestamp as of which to calculate JL pivots",
+    )
+    parser.add_argument(
+        "--factor",
+        type=float,
+        required=True,
+        help="Livermore penetration factor",
+    )
+    args = parser.parse_args()
 
-    jl = StxJL(ts, factor)
-    jl.jl(dt)
+    loader = DataLoader()
+
+    # parse the date range so it matches Polars' native dtypes
+    start_dt = datetime.fromisoformat(args.start_date).date()
+    end_dt = datetime.fromisoformat(args.end_date).date()
+
+    if args.data_type == "eod":
+        df = loader.load_eod(
+            args.stk,
+            start_date=start_dt.isoformat(),
+            end_date=end_dt.isoformat(),
+            as_of_date=end_dt.isoformat(),
+        )
+        df = df.rename(
+            {
+                "date": "dt",
+                "high": "hi",
+                "low": "lo",
+                "close": "c",
+            }
+        )
+    else:
+        df = loader.load_intraday(
+            args.stk,
+            start_dt.isoformat(),
+            end_dt.isoformat(),
+            as_of_date=end_dt.isoformat(),
+        )
+        df = df.rename(
+            {
+                "timestamp": "dt",
+                "high": "hi",
+                "low": "lo",
+                "close": "c",
+            }
+        )
+
+    jl = StxJL(df, args.factor)
+
+    # Convert the pivot calculation date to match the df dtype
+    if df.get_column("dt").dtype == pl.Date:
+        calc_dt = datetime.fromisoformat(args.dt).date()
+    elif df.get_column("dt").dtype == pl.Datetime:
+        calc_dt = datetime.fromisoformat(args.dt)
+    else:
+        calc_dt = args.dt
+
+    jl.jl(calc_dt)
     jl.jl_print()
-    pivs = jl.get_pivots_in_days(100)
-    print("Pivs in 100 days:")
-    jl.print_pivs(pivs)
-    pivs = jl.get_num_pivots(4)
-    print("4 pivs:")
-    jl.print_pivs(pivs)
-    print(jl.html_report(pivs))
