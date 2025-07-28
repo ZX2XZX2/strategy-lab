@@ -30,6 +30,7 @@ from dataclasses import dataclass
 import numpy as np
 import polars as pl
 from strategy_lab.data.loader import DataLoader
+from strategy_lab.utils.trading_calendar import TradingCalendar
 
 # --------------------------------  tiny record for API parity
 @dataclass
@@ -703,6 +704,12 @@ class StxJL:                            # keep the original public name
 
     @classmethod
     def jl_report(cls, stk, start_date, end_date, factor):
+        calendar = TradingCalendar()
+        if start_date not in calendar.trading_days:
+            start_date = calendar.previous(start_date)
+        if end_date not in calendar.trading_days:
+            end_date = calendar.previous(end_date)
+
         loader = DataLoader()
         df = loader.load_eod(
             stk,
@@ -745,6 +752,19 @@ if __name__ == "__main__":
         help="Livermore penetration factor",
     )
     args = parser.parse_args()
+
+    # Adjust the input dates to the previous business day if needed
+    calendar = TradingCalendar()
+
+    if args.start_date not in calendar.trading_days:
+        args.start_date = calendar.previous(args.start_date)
+    if args.end_date not in calendar.trading_days:
+        args.end_date = calendar.previous(args.end_date)
+
+    dt_date_str = args.dt.split("T")[0].split(" ")[0]
+    if dt_date_str not in calendar.trading_days:
+        adj_dt = calendar.previous(dt_date_str)
+        args.dt = adj_dt + args.dt[len(dt_date_str):]
 
     loader = DataLoader()
 
