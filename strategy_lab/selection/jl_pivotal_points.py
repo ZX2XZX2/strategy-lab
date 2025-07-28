@@ -76,7 +76,8 @@ class StxJL:                            # keep the original public name
         self.c = self.df["c"].to_numpy()
         self.hb4l = self.df["hb4l"].to_numpy()
         # store dates as strings to avoid formatting issues when printing
-        self.dates = [str(x) for x in self.df["dt"].to_list()]
+        self.dates = self.df["dt"].to_list()
+        # self.dates = [str(x) for x in self.df["dt"].to_list()]
         self.date_to_index = {d: i for i, d in enumerate(self.dates)}
 
         # bookkeeping containers (identical to original file)
