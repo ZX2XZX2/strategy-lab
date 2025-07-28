@@ -135,7 +135,8 @@ class DataLoader:
             else:
                 df = pl.read_parquet(str(path))
 
-        splits = self._load_splits(ticker)
+        split_source = "db" if data_source == "db" else "file"
+        splits = self._load_splits(ticker, data_source=split_source)
         if as_of_date:
             as_of_date = datetime.strptime(as_of_date, "%Y-%m-%d").date()
             splits = splits.filter(pl.col("date") <= as_of_date)
@@ -167,7 +168,8 @@ class DataLoader:
             return df
 
         last_date = df.get_column("date").max()
-        splits = self._load_splits(ticker)
+        split_source = "db" if data_source == "db" else "file"
+        splits = self._load_splits(ticker, data_source=split_source)
         if as_of_date:
             as_dt = datetime.strptime(as_of_date, "%Y-%m-%d").date()
             splits = splits.filter(pl.col("date") <= as_dt)
@@ -253,7 +255,8 @@ class DataLoader:
         if df.is_empty():
             return df
 
-        splits = self._load_splits(ticker)
+        split_source = "db" if data_source == "db" else "file"
+        splits = self._load_splits(ticker, data_source=split_source)
         if as_of_date:
             as_dt = datetime.strptime(as_of_date, "%Y-%m-%d").date()
             splits = splits.filter(pl.col("date") <= as_dt)
@@ -286,7 +289,8 @@ class DataLoader:
         last_ts = df.get_column("timestamp").max()
         last_date = pl.Series([last_ts]).dt.date()[0]
 
-        splits = self._load_splits(ticker)
+        split_source = "db" if data_source == "db" else "file"
+        splits = self._load_splits(ticker, data_source=split_source)
         new_splits = splits.filter(pl.col("date") > last_date)
         if not new_splits.is_empty():
             df = Adjuster.apply_splits(df, new_splits, date_col="timestamp")
@@ -373,10 +377,30 @@ class DataLoader:
         )
         return df
 
-    def _load_splits(self, ticker: str) -> pl.DataFrame:
-        df = pl.read_parquet(self.splits_path)
-        if df.is_empty():
-            return df
-        if df.dtypes[1] != pl.Date:
-            df = df.with_columns(pl.col("date").str.strptime(pl.Date, "%Y-%m-%d"))
+    async def _fetch_splits_from_db(self, ticker: str) -> pl.DataFrame:
+        query = (
+            "SELECT stk, dt, ratio FROM dividends "
+            "WHERE stk = $1 ORDER BY dt"
+        )
+        conn = await asyncpg.connect(**DB_CONFIG)
+        rows = await conn.fetch(query, ticker)
+        await conn.close()
+        if not rows:
+            return pl.DataFrame()
+        df = pl.DataFrame([dict(r) for r in rows]).rename(
+            {"stk": "ticker", "dt": "date"}
+        )
+        return df
+
+    def _load_splits(self, ticker: str, data_source: str = "db") -> pl.DataFrame:
+        if data_source == "db":
+            df = asyncio.run(self._fetch_splits_from_db(ticker))
+        else:
+            df = pl.read_parquet(self.splits_path)
+            if df.is_empty():
+                return df
+            if df.dtypes[1] != pl.Date:
+                df = df.with_columns(
+                    pl.col("date").str.strptime(pl.Date, "%Y-%m-%d")
+                )
         return df.filter(pl.col("ticker") == ticker).sort("date")
