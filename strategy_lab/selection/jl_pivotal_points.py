@@ -22,7 +22,6 @@ c3e5b35, 2025-05-31) with these changes only:
 from __future__ import annotations
 
 import argparse
-import sys
 from typing import List
 from datetime import datetime
 
@@ -101,8 +100,8 @@ class StxJL:                            # keep the original public name
             "ls",
         ]
         self.col_ix = {c: i for i, c in enumerate(self.cols)}
-        self.jl_recs: List[list] = [self.cols[:]]      # header row
-        self.jlix: dict[str, int] = {}                 # date → jl_recs index
+        self.jl_recs: List[list] = [self.cols[:]]  # header row
+        self.jlix: dict[str, int] = {}  # date → jl_recs index
 
         self.last = {
             "prim_px": 0.0,
@@ -133,8 +132,8 @@ class StxJL:                            # keep the original public name
     def jl(self, dt: str) -> List[list]:
         """Run the JL state machine up to <dt> (inclusive)."""
         self.set_datetime(dt, -1)
-        start_idx = self.initjl()        # primes algorithm
         end_idx = self.pos
+        start_idx = self.initjl()  # initialise the JL state variables
 
         for _ in range(start_idx, end_idx + 1):
             self.next_ohlc()
@@ -146,7 +145,7 @@ class StxJL:                            # keep the original public name
     def initjl(self) -> int:
         ss = self.start
         win = min(self.w, self.pos - ss + 1)
-        self.set_datetime(self.dates[ss + win - 1])      # fast date lookup
+        self.set_datetime(self.dates[ss + win - 1])  # fast date lookup
 
         # Polars slice is zero-copy
         df0 = self.df.slice(ss, win)
@@ -327,13 +326,8 @@ class StxJL:                            # keep the original public name
             dd["p1_s"] = piv_rec[self.col_ix["state"]]
         dd["p1_dt"] = dd["lns_dt"]
 
-    # -------------  PER-BAR ADVANCE  --------------------------------------
+    # -----------------------  PER-BAR ADVANCE  ------------------------------
     def nextjl(self) -> None:
-        dtc = self.dates[self.pos]
-        split = self.splits.get(pl.datetime(dtc))
-        if split is not None:
-            self.adjust_for_splits(split[0])
-
         fctr = self.f * self.avg_rg
         st = self.last["state"]
         if st == StxJL.SRa:
@@ -356,17 +350,7 @@ class StxJL:                            # keep the original public name
         self.trs.append(tr_new)
         self.avg_rg = float(np.mean(self.trs))
 
-    # ─────────────  SPLIT ADJUST (same logic, vectorised)  ────────────────
-    def adjust_for_splits(self, ratio: float):
-        self.lp = [x * ratio for x in self.lp]
-        for jlr in self.jl_recs[1:]:
-            for f in ("rg", "price", "price2", "p1_px", "lns_px"):
-                jlr[self.col_ix[f]] *= ratio
-        self.last["prim_px"] *= ratio
-        self.last["px"] *= ratio
-        self.trs[:] = [x * ratio for x in self.trs]
-
-    # ─────────────  STATE-MACHINE ROUTINES  (adapted only for row access) ─
+    # --------  STATE-MACHINE ROUTINES  (adapted only for row access) --------
     # helper to fetch a dict-like view of the current bar (hi, lo, hb4l)
     def _bar(self):
         i = self.pos
@@ -508,7 +492,7 @@ class StxJL:                            # keep the original public name
                 self.lp[StxJL.m_NRe] = self.lp[StxJL.NRe]
         self.rec_day(sh, sl)
 
-    # ─────────────  tiny helpers (unchanged)  ─────────────────────────────
+    # -----------------  tiny helpers (unchanged)  ------------------------
     def up(self, state): return state in [StxJL.NRa, StxJL.UT]
     def dn(self, state): return state in [StxJL.NRe, StxJL.DT]
     def up_all(self, state): return state in [StxJL.SRa, StxJL.NRa, StxJL.UT]
