@@ -8,7 +8,7 @@ from datetime import datetime
 import polars as pl
 
 from strategy_lab.data.loader import DataLoader
-from .jl_pivotal_points import StxJL, JLPivot
+from strategy_lab.selection.jl_pivotal_points import StxJL, JLPivot
 
 
 @dataclass
