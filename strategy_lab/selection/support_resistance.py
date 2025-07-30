@@ -45,30 +45,40 @@ def extract_pivots(jl: StxJL) -> List[JLPivot]:
 
 
 def group_pivots(pivots: List[JLPivot], threshold: float, buffer: float) -> List[PivotArea]:
-    """Group pivots into support/resistance areas."""
-    clusters: List[dict] = []
-    for p in pivots:
-        added = False
-        for cl in clusters:
-            if abs(p.price - cl["avg"] ) <= threshold:
-                cl["pivots"].append(p)
-                cl["avg"] = sum(x.price for x in cl["pivots"]) / len(cl["pivots"])
-                added = True
-                break
-        if not added:
-            clusters.append({"avg": p.price, "pivots": [p]})
+    """Group pivots into support/resistance areas.
 
-    areas: List[PivotArea] = []
-    for cl in clusters:
-        prices = [p.price for p in cl["pivots"]]
-        upper = max(prices) + buffer
-        lower = min(prices) - buffer
-        up_states = [StxJL.NRa, StxJL.UT]
-        dn_states = [StxJL.NRe, StxJL.DT]
-        up_count = sum(1 for p in cl["pivots"] if p.state in up_states)
-        dn_count = sum(1 for p in cl["pivots"] if p.state in dn_states)
-        area_type = "resistance" if up_count >= dn_count else "support"
-        areas.append(PivotArea(lower, upper, cl["pivots"], area_type))
+    Pivots are first separated by type (support vs. resistance). Clusters are
+    only returned when they contain more than a single pivot.
+    """
+
+    def cluster(pivots_subset: List[JLPivot], area_type: str) -> List[PivotArea]:
+        clusters: List[List[JLPivot]] = []
+        for p in pivots_subset:
+            for cl in clusters:
+                avg = sum(x.price for x in cl) / len(cl)
+                if abs(p.price - avg) <= threshold:
+                    cl.append(p)
+                    break
+            else:
+                clusters.append([p])
+
+        areas: List[PivotArea] = []
+        for cl in clusters:
+            if len(cl) <= 1:
+                continue
+            prices = [p.price for p in cl]
+            areas.append(
+                PivotArea(min(prices) - buffer, max(prices) + buffer, cl, area_type)
+            )
+        return areas
+
+    up_states = {StxJL.NRa, StxJL.UT}
+    dn_states = {StxJL.NRe, StxJL.DT}
+
+    support_pivots = [p for p in pivots if p.state in dn_states]
+    resistance_pivots = [p for p in pivots if p.state in up_states]
+
+    areas = cluster(support_pivots, "support") + cluster(resistance_pivots, "resistance")
     return areas
 
 
