@@ -2,6 +2,7 @@ from datetime import datetime, date
 
 import matplotlib.pyplot as plt
 import mplfinance as mpf
+
 import polars as pl
 from strategy_lab.plotting.charts import plot_candlestick
 
@@ -63,3 +64,4 @@ def test_plot_intraday_chart(monkeypatch):
     pd_df = captured["data"]
     assert pd_df["open"].iloc[0] == 0.01
     assert captured["kwargs"]["warn_too_much_data"] == 2000
+    
