@@ -1,3 +1,5 @@
+from datetime import datetime, date
+
 import polars as pl
 from strategy_lab.scripts.plot_stock import _adjust_dates, plot_stock
 
@@ -15,24 +17,31 @@ class DummyCalendar:
 
 class DummyLoader:
     def load_eod(self, ticker, start_date=None, end_date=None, **kwargs):
-        return pl.DataFrame({
-            "date": ["2024-01-02", "2024-01-03"],
-            "open": [1, 2],
-            "high": [1.5, 2.5],
-            "low": [0.5, 1.5],
-            "close": [1.2, 2.0],
-            "volume": [100, 200],
-        })
+        return pl.DataFrame(
+            {
+                "date": [date(2024, 1, 2), date(2024, 1, 3)],
+                "open": [1, 2],
+                "high": [1.5, 2.5],
+                "low": [0.5, 1.5],
+                "close": [1.2, 2.0],
+                "volume": [100, 200],
+            }
+        )
 
     def load_intraday(self, ticker, start_date, end_date, **kwargs):
-        return pl.DataFrame({
-            "timestamp": ["2024-01-02 09:30:00", "2024-01-02 15:55:00"],
-            "open": [1, 2],
-            "high": [1.5, 2.5],
-            "low": [0.5, 1.5],
-            "close": [1.2, 2.0],
-            "volume": [100, 200],
-        })
+        return pl.DataFrame(
+            {
+                "timestamp": [
+                    datetime(2024, 1, 2, 9, 30, 0),
+                    datetime(2024, 1, 2, 15, 55, 0),
+                ],
+                "open": [1, 2],
+                "high": [1.5, 2.5],
+                "low": [0.5, 1.5],
+                "close": [1.2, 2.0],
+                "volume": [100, 200],
+            }
+        )
 
 
 def test_adjust_dates_intraday():
