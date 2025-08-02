@@ -48,6 +48,14 @@ def plot_candlestick(df: pl.DataFrame, start_date: str, end_date: str) -> plt.Fi
         .to_pandas()
         .set_index("Date")
     )
+    pd_df[["open", "high", "low", "close"]] = pd_df[["open", "high", "low", "close"]] / 100
 
-    fig, _ = mpf.plot(pd_df, type="candle", volume=True, style="yahoo", returnfig=True)
+    fig, _ = mpf.plot(
+        pd_df,
+        type="candle",
+        volume=True,
+        style="yahoo",
+        warn_too_much_data=2000,
+        returnfig=True,
+    )
     return fig
