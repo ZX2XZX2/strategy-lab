@@ -53,7 +53,7 @@ def _draw_sr_areas(fig: plt.Figure, areas: List[PivotArea]) -> None:
     """Overlay support/resistance areas on an existing figure."""
     ax = fig.axes[0]
     for area in areas:
-        ax.axhspan(area.lower / 100, area.upper / 100, color="gold", alpha=0.2)
+        ax.axhspan(area.lower / 100, area.upper / 100, color="darkgoldenrod", alpha=0.2)
 
 
 def plot_stock(
