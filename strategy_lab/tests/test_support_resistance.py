@@ -11,14 +11,9 @@ def test_group_pivots_simple():
         JLPivot("2024-01-05", StxJL.NRa, 150, 1),
     ]
     areas = group_pivots(pivots, threshold=3, buffer=1)
-    assert len(areas) == 2
-    types = {area.area_type for area in areas}
-    assert {"support", "resistance"} == types
-    for area in areas:
-        if area.area_type == "support":
-            assert len(area.pivots) == 2
-            assert area.lower == 99
-            assert area.upper == 102
-        elif area.area_type == "resistance":
-            assert len(area.pivots) == 2
+    assert len(areas) == 1
+    area = areas[0]
+    assert len(area.pivots) == 4
+    assert area.lower == 99
+    assert area.upper == 104
 

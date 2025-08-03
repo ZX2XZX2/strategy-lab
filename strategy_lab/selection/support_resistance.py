@@ -16,7 +16,6 @@ class PivotArea:
     lower: float
     upper: float
     pivots: List[JLPivot]
-    area_type: str  # 'support' or 'resistance'
 
 
 def extract_pivots(jl: StxJL) -> List[JLPivot]:
@@ -45,40 +44,29 @@ def extract_pivots(jl: StxJL) -> List[JLPivot]:
 
 
 def group_pivots(pivots: List[JLPivot], threshold: float, buffer: float) -> List[PivotArea]:
-    """Group pivots into support/resistance areas.
+    """Group pivots into combined support/resistance areas.
 
-    Pivots are first separated by type (support vs. resistance). Clusters are
-    only returned when they contain more than a single pivot.
+    Pivots of both types are clustered together when they fall within
+    ``threshold`` of the running average price of an existing cluster. Clusters
+    containing only a single pivot are ignored.
     """
 
-    def cluster(pivots_subset: List[JLPivot], area_type: str) -> List[PivotArea]:
-        clusters: List[List[JLPivot]] = []
-        for p in pivots_subset:
-            for cl in clusters:
-                avg = sum(x.price for x in cl) / len(cl)
-                if abs(p.price - avg) <= threshold:
-                    cl.append(p)
-                    break
-            else:
-                clusters.append([p])
-
-        areas: List[PivotArea] = []
+    clusters: List[List[JLPivot]] = []
+    for p in pivots:
         for cl in clusters:
-            if len(cl) <= 1:
-                continue
-            prices = [p.price for p in cl]
-            areas.append(
-                PivotArea(min(prices) - buffer, max(prices) + buffer, cl, area_type)
-            )
-        return areas
+            avg = sum(x.price for x in cl) / len(cl)
+            if abs(p.price - avg) <= threshold:
+                cl.append(p)
+                break
+        else:
+            clusters.append([p])
 
-    up_states = {StxJL.NRa, StxJL.UT}
-    dn_states = {StxJL.NRe, StxJL.DT}
-
-    support_pivots = [p for p in pivots if p.state in dn_states]
-    resistance_pivots = [p for p in pivots if p.state in up_states]
-
-    areas = cluster(support_pivots, "support") + cluster(resistance_pivots, "resistance")
+    areas: List[PivotArea] = []
+    for cl in clusters:
+        if len(cl) <= 1:
+            continue
+        prices = [p.price for p in cl]
+        areas.append(PivotArea(min(prices) - buffer, max(prices) + buffer, cl))
     return areas
 
 
@@ -154,6 +142,6 @@ if __name__ == "__main__":
     )
 
     for area in areas:
-        print(f"{area.area_type.capitalize()} {area.lower/100:.2f} - {area.upper/100:.2f}")
+        print(f"Area {area.lower/100:.2f} - {area.upper/100:.2f}")
         for p in area.pivots:
             print(f"  {p.dt} state:{p.state} price:{p.price/100:.2f}")
