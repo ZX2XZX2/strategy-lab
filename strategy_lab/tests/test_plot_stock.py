@@ -1,7 +1,8 @@
 from datetime import datetime, date
 
 import polars as pl
-from strategy_lab.scripts.plot_stock import _adjust_dates, plot_stock
+from strategy_lab.scripts.plot_stock import plot_stock
+from strategy_lab.utils.trading_calendar import adjust_start_end
 
 
 class DummyCalendar:
@@ -46,7 +47,7 @@ class DummyLoader:
 
 def test_adjust_dates_intraday():
     cal = DummyCalendar()
-    start, end = _adjust_dates(cal, "2024-01-01", "2024-01-01", "intraday")
+    start, end = adjust_start_end(cal, "2024-01-01", "2024-01-01", "intraday")
     assert start == "2024-01-02 09:30:00"
     assert end == "2024-01-02 15:55:00"
 

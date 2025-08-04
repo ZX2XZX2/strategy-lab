@@ -8,35 +8,7 @@ import polars as pl
 from strategy_lab.data.loader import DataLoader
 from strategy_lab.plotting import plot_candlestick
 from strategy_lab.selection.support_resistance import PivotArea, detect_areas
-from strategy_lab.utils.trading_calendar import TradingCalendar
-
-
-def _adjust_dates(calendar: TradingCalendar, start: str, end: str, data_type: str) -> tuple[str, str]:
-    """Adjust provided start and end to valid business days.
-
-    For intraday data, missing time components are filled with default
-    start and end times.
-    """
-    if data_type == "intraday":
-        start_parts = start.split()
-        start_date = start_parts[0]
-        start_time = start_parts[1] if len(start_parts) > 1 else "09:30:00"
-        if start_date not in calendar.trading_days:
-            start_date = calendar.previous(start_date)
-        start = f"{start_date} {start_time}"
-
-        end_parts = end.split()
-        end_date = end_parts[0]
-        end_time = end_parts[1] if len(end_parts) > 1 else "15:55:00"
-        if end_date not in calendar.trading_days:
-            end_date = calendar.previous(end_date)
-        end = f"{end_date} {end_time}"
-    else:
-        if start not in calendar.trading_days:
-            start = calendar.previous(start)
-        if end not in calendar.trading_days:
-            end = calendar.previous(end)
-    return start, end
+from strategy_lab.utils.trading_calendar import TradingCalendar, adjust_start_end
 
 
 def _load_data(loader: DataLoader, data_type: str, ticker: str, start: str, end: str) -> pl.DataFrame:
@@ -73,7 +45,7 @@ def plot_stock(
     """
     if calendar is None:
         calendar = TradingCalendar()
-    start, end = _adjust_dates(calendar, start, end, data_type)
+    start, end = adjust_start_end(calendar, start, end, data_type)
 
     if loader is None:
         loader = DataLoader(calendar=calendar)

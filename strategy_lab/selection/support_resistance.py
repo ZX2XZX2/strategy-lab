@@ -9,6 +9,7 @@ import polars as pl
 
 from strategy_lab.data.loader import DataLoader
 from strategy_lab.selection.jl_pivotal_points import StxJL, JLPivot
+from strategy_lab.utils.trading_calendar import TradingCalendar, adjust_start_end
 
 
 @dataclass
@@ -128,12 +129,15 @@ if __name__ == "__main__":
     parser.add_argument("--area", type=float, required=True, help="Area buffer above/below pivot price in dollars")
     args = parser.parse_args()
 
+    cal = TradingCalendar()
+    start, end = adjust_start_end(cal, args.start_date, args.end_date, args.data_type)
+
     threshold = int(args.threshold * 100)
     buffer = int(args.area * 100)
     areas = detect_areas(
         args.stk,
-        args.start_date,
-        args.end_date,
+        start,
+        end,
         args.dt,
         args.factor,
         threshold,
