@@ -2,7 +2,7 @@ from datetime import datetime, date
 
 import polars as pl
 from strategy_lab.scripts.plot_stock import plot_stock
-from strategy_lab.utils.trading_calendar import adjust_calc_dt, adjust_start_end
+from strategy_lab.utils.trading_calendar import adjust_dt
 
 
 class DummyCalendar:
@@ -14,6 +14,12 @@ class DummyCalendar:
             if d < date:
                 return d
         return self.trading_days[0]
+
+    def next(self, date: str) -> str:
+        for d in self.trading_days:
+            if d > date:
+                return d
+        return self.trading_days[-1]
 
 
 class DummyLoader:
@@ -45,22 +51,23 @@ class DummyLoader:
         )
 
 
-def test_adjust_dates_intraday():
+def test_adjust_dt_intraday():
     cal = DummyCalendar()
-    start, end = adjust_start_end(cal, "2024-01-01", "2024-01-01", "intraday")
+    start = adjust_dt(cal, "2024-01-01", True, is_start=True)
+    end = adjust_dt(cal, "2024-01-01", True)
     assert start == "2024-01-02 09:30:00"
     assert end == "2024-01-02 15:55:00"
 
 
-def test_adjust_calc_dt_intraday():
+def test_adjust_dt_intraday_default_close():
     cal = DummyCalendar()
-    dt = adjust_calc_dt(cal, "2024-01-01", "intraday")
+    dt = adjust_dt(cal, "2024-01-01", True)
     assert dt == "2024-01-02 15:55:00"
 
 
-def test_adjust_calc_dt_eod():
+def test_adjust_dt_eod():
     cal = DummyCalendar()
-    dt = adjust_calc_dt(cal, "2024-01-01", "eod")
+    dt = adjust_dt(cal, "2024-01-01")
     assert dt == "2024-01-02"
 
 

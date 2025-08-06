@@ -8,7 +8,7 @@ import polars as pl
 from strategy_lab.data.loader import DataLoader
 from strategy_lab.plotting import plot_candlestick
 from strategy_lab.selection.support_resistance import PivotArea, detect_areas
-from strategy_lab.utils.trading_calendar import TradingCalendar, adjust_start_end
+from strategy_lab.utils.trading_calendar import TradingCalendar, adjust_dt
 
 
 def _load_data(loader: DataLoader, data_type: str, ticker: str, start: str, end: str) -> pl.DataFrame:
@@ -45,7 +45,8 @@ def plot_stock(
     """
     if calendar is None:
         calendar = TradingCalendar()
-    start, end = adjust_start_end(calendar, start, end, data_type)
+    start = adjust_dt(calendar, start, data_type == "intraday", is_start=True)
+    end = adjust_dt(calendar, end, data_type == "intraday")
 
     if loader is None:
         loader = DataLoader(calendar=calendar)
@@ -90,27 +91,33 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    calendar = TradingCalendar()
+    start = adjust_dt(calendar, args.start, args.data_type == "intraday", is_start=True)
+    end = adjust_dt(calendar, args.end, args.data_type == "intraday")
+
     sr_areas = None
     if args.sr:
         threshold = int(args.sr_threshold * 100)
         buffer = int(args.sr_buffer * 100)
         sr_areas = detect_areas(
             args.ticker,
-            args.start.split()[0],
-            args.end.split()[0],
-            args.end,
+            start.split()[0],
+            end.split()[0],
+            end,
             args.sr_factor,
             threshold,
             buffer,
             data_type=args.data_type,
+            calendar=calendar,
         )
 
     plot_stock(
         args.ticker,
         args.data_type,
-        args.start,
-        args.end,
+        start,
+        end,
         sr_areas=sr_areas,
+        calendar=calendar,
     )
 
 

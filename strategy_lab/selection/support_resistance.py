@@ -9,11 +9,7 @@ import polars as pl
 
 from strategy_lab.data.loader import DataLoader
 from strategy_lab.selection.jl_pivotal_points import StxJL, JLPivot
-from strategy_lab.utils.trading_calendar import (
-    TradingCalendar,
-    adjust_calc_dt,
-    adjust_start_end,
-)
+from strategy_lab.utils.trading_calendar import TradingCalendar, adjust_dt
 
 
 @dataclass
@@ -88,7 +84,9 @@ def detect_areas(
 ) -> List[PivotArea]:
     if calendar is None:
         calendar = TradingCalendar()
-    calc_dt = adjust_calc_dt(calendar, calc_dt, data_type)
+    start_date = adjust_dt(calendar, start_date, is_start=True)
+    end_date = adjust_dt(calendar, end_date)
+    calc_dt = adjust_dt(calendar, calc_dt, data_type == "intraday")
     loader = DataLoader(calendar=calendar)
     start_dt = datetime.fromisoformat(start_date).date()
     end_dt = datetime.fromisoformat(end_date).date()
@@ -138,7 +136,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     cal = TradingCalendar()
-    start, end = adjust_start_end(cal, args.start_date, args.end_date, args.data_type)
+    start = adjust_dt(cal, args.start_date, args.data_type == "intraday", is_start=True)
+    end = adjust_dt(cal, args.end_date, args.data_type == "intraday")
 
     threshold = int(args.threshold * 100)
     buffer = int(args.area * 100)
@@ -146,7 +145,7 @@ if __name__ == "__main__":
         args.stk,
         start,
         end,
-        args.dt,
+        adjust_dt(cal, args.dt, args.data_type == "intraday"),
         args.factor,
         threshold,
         buffer,

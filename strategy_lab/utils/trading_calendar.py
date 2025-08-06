@@ -78,51 +78,30 @@ class TradingCalendar:
         raise ValueError("No valid business date found.")
 
 
-def adjust_start_end(
-    calendar: TradingCalendar, start: str, end: str, data_type: str
-) -> tuple[str, str]:
-    """Normalize start and end for data loading.
+def adjust_dt(
+    calendar: TradingCalendar,
+    dt: str,
+    is_intraday: bool = False,
+    is_start: bool = False,
+) -> str:
+    """Normalize a date or datetime string.
 
-    If either ``start`` or ``end`` fall on non-trading days they are shifted to
-    the previous business day. When ``data_type`` is ``"intraday"`` and time
-    components are missing, default market open/close times are appended.
+    ``dt`` is shifted to the previous business day when ``is_start`` is
+    ``False`` or the next business day when ``True`` if it falls on a holiday.
+    For intraday data lacking a time component, ``09:30:00`` is appended for
+    start dates and ``15:55:00`` for end dates.
     """
-    if data_type == "intraday":
-        start_parts = start.split()
-        start_date = start_parts[0]
-        start_time = start_parts[1] if len(start_parts) > 1 else "09:30:00"
-        if start_date not in calendar.trading_days:
-            start_date = calendar.previous(start_date)
-        start = f"{start_date} {start_time}"
 
-        end_parts = end.split()
-        end_date = end_parts[0]
-        end_time = end_parts[1] if len(end_parts) > 1 else "15:55:00"
-        if end_date not in calendar.trading_days:
-            end_date = calendar.previous(end_date)
-        end = f"{end_date} {end_time}"
-    else:
-        if start not in calendar.trading_days:
-            start = calendar.previous(start)
-        if end not in calendar.trading_days:
-            end = calendar.previous(end)
-    return start, end
-
-
-def adjust_calc_dt(calendar: TradingCalendar, dt: str, data_type: str) -> str:
-    """Normalize ``calc_dt`` for support/resistance detection.
-
-    If ``dt`` falls on a non-trading day it is shifted to the previous business
-    day. When ``data_type`` is ``"intraday"`` and the time component is
-    missing, a default market close time of ``15:55:00`` is appended.
-    """
-    if data_type == "intraday":
-        parts = dt.split()
-        date = parts[0]
-        time = parts[1] if len(parts) > 1 else "15:55:00"
-        if date not in calendar.trading_days:
+    parts = dt.split()
+    date = parts[0]
+    if date not in calendar.trading_days:
+        if is_start:
+            date = calendar.next(date)
+        else:
             date = calendar.previous(date)
+
+    if is_intraday:
+        time = parts[1] if len(parts) > 1 else ("09:30:00" if is_start else "15:55:00")
         return f"{date} {time}"
-    if dt not in calendar.trading_days:
-        dt = calendar.previous(dt)
-    return dt
+
+    return date
