@@ -76,3 +76,32 @@ class TradingCalendar:
 
         # If the list is empty or today is before the first trading day
         raise ValueError("No valid business date found.")
+
+
+def adjust_dt(
+    calendar: TradingCalendar,
+    dt: str,
+    is_intraday: bool = False,
+    is_start: bool = False,
+) -> str:
+    """Normalize a date or datetime string.
+
+    ``dt`` is shifted to the previous business day when ``is_start`` is
+    ``False`` or the next business day when ``True`` if it falls on a holiday.
+    For intraday data lacking a time component, ``09:30:00`` is appended for
+    start dates and ``15:55:00`` for end dates.
+    """
+
+    parts = dt.split()
+    date = parts[0]
+    if date not in calendar.trading_days:
+        if is_start:
+            date = calendar.next(date)
+        else:
+            date = calendar.previous(date)
+
+    if is_intraday:
+        time = parts[1] if len(parts) > 1 else ("09:30:00" if is_start else "15:55:00")
+        return f"{date} {time}"
+
+    return date
