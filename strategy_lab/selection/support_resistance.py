@@ -9,7 +9,11 @@ import polars as pl
 
 from strategy_lab.data.loader import DataLoader
 from strategy_lab.selection.jl_pivotal_points import StxJL, JLPivot
-from strategy_lab.utils.trading_calendar import TradingCalendar, adjust_start_end
+from strategy_lab.utils.trading_calendar import (
+    TradingCalendar,
+    adjust_calc_dt,
+    adjust_start_end,
+)
 
 
 @dataclass
@@ -80,8 +84,12 @@ def detect_areas(
     threshold: float,
     buffer: float,
     data_type: str = "eod",
+    calendar: TradingCalendar | None = None,
 ) -> List[PivotArea]:
-    loader = DataLoader()
+    if calendar is None:
+        calendar = TradingCalendar()
+    calc_dt = adjust_calc_dt(calendar, calc_dt, data_type)
+    loader = DataLoader(calendar=calendar)
     start_dt = datetime.fromisoformat(start_date).date()
     end_dt = datetime.fromisoformat(end_date).date()
 

@@ -107,3 +107,22 @@ def adjust_start_end(
         if end not in calendar.trading_days:
             end = calendar.previous(end)
     return start, end
+
+
+def adjust_calc_dt(calendar: TradingCalendar, dt: str, data_type: str) -> str:
+    """Normalize ``calc_dt`` for support/resistance detection.
+
+    If ``dt`` falls on a non-trading day it is shifted to the previous business
+    day. When ``data_type`` is ``"intraday"`` and the time component is
+    missing, a default market close time of ``15:55:00`` is appended.
+    """
+    if data_type == "intraday":
+        parts = dt.split()
+        date = parts[0]
+        time = parts[1] if len(parts) > 1 else "15:55:00"
+        if date not in calendar.trading_days:
+            date = calendar.previous(date)
+        return f"{date} {time}"
+    if dt not in calendar.trading_days:
+        dt = calendar.previous(dt)
+    return dt
