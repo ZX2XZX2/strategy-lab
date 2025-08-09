@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import polars as pl
 
@@ -117,6 +117,108 @@ def detect_areas(
     jl.jl(dt_val)
     pivots = extract_pivots(jl)
     return group_pivots(pivots, threshold, buffer)
+
+
+def _pivots_and_areas_from_df(
+    df: pl.DataFrame,
+    factor: float,
+    threshold: float,
+    buffer: float,
+) -> tuple[List[JLPivot], List[PivotArea]]:
+    """Helper that derives pivots and areas from a DataFrame.
+
+    The JL algorithm requires a minimum lookback window.  For small intraday
+    samples we cap the window to the available data length to avoid index
+    errors.
+    """
+
+    jl = StxJL(df, factor, w=min(20, len(df)))
+    dt_val = df.get_column("dt")[-1]
+    jl.jl(dt_val)
+    pivots = extract_pivots(jl)
+    areas = group_pivots(pivots, threshold, buffer)
+    return pivots, areas
+
+
+def detect_intraday_high_close_signals(
+    ticker: str,
+    start_date: str,
+    n_days: int,
+    factor: float,
+    threshold: float,
+    buffer: float,
+    calendar: TradingCalendar | None = None,
+) -> List[str]:
+    """Scan intraday data for high-close signals around support/resistance.
+
+    The first ``n_days - 1`` days are used to establish support/resistance
+    areas.  The intraday bars of the final day are processed sequentially and
+    the areas are recalculated after each bar.  When the most recent pivot of
+    type ``DT``/``NRe``/``SRe`` falls inside a support/resistance area and at
+    least two high-close bars have printed since that pivot, a signal is
+    emitted.
+
+    Parameters are deliberately lightweight to keep the function suitable for
+    testing and experimentation.  It returns a list of ISO formatted timestamps
+    at which signals were triggered.
+    """
+
+    if calendar is None:
+        calendar = TradingCalendar()
+
+    start_dt = datetime.fromisoformat(start_date)
+    end_dt = start_dt + timedelta(days=n_days - 1)
+
+    loader = DataLoader(calendar=calendar)
+    df = loader.load_intraday(
+        ticker,
+        start_dt.date().isoformat(),
+        end_dt.date().isoformat(),
+    ).rename({"timestamp": "dt", "high": "hi", "low": "lo", "close": "c"})
+
+    if df.is_empty():
+        return []
+
+    if df.get_column("dt").dtype != pl.Datetime:
+        df = df.with_columns(pl.col("dt").str.strptime(pl.Datetime, "%Y-%m-%d %H:%M:%S"))
+
+    last_day = end_dt.date()
+    df_prev = df.filter(pl.col("dt").dt.date() < last_day)
+    df_curr = df.filter(pl.col("dt").dt.date() == last_day)
+
+    signals: List[str] = []
+    last_signal_pivot: str | None = None
+
+    for i in range(len(df_curr)):
+        running = pl.concat([df_prev, df_curr.slice(0, i + 1)])
+        pivots, areas = _pivots_and_areas_from_df(running, factor, threshold, buffer)
+
+        trg_pivots = [p for p in pivots if p.state in (StxJL.DT, StxJL.NRe, StxJL.SRe)]
+        if not trg_pivots:
+            continue
+        last_pivot = trg_pivots[-1]
+
+        if last_signal_pivot == last_pivot.dt:
+            continue
+
+        in_area = any(area.lower <= last_pivot.price <= area.upper for area in areas)
+        if not in_area:
+            continue
+
+        pivot_dt = datetime.fromisoformat(last_pivot.dt)
+        bars_since = running.filter(pl.col("dt") > pivot_dt)
+        if bars_since.is_empty():
+            continue
+
+        high_close_count = (
+            (bars_since["c"] - bars_since["lo"] >= 0.75 * (bars_since["hi"] - bars_since["lo"]))
+            .sum()
+        )
+        if int(high_close_count) >= 2:
+            signals.append(str(df_curr[i, "dt"]))
+            last_signal_pivot = last_pivot.dt
+
+    return signals
 
 
 if __name__ == "__main__":
